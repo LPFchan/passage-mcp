@@ -177,20 +177,31 @@ def _build_lifespan(config_path: str):
 
 def _register_tools(mcp_server: FastMCP) -> None:
     @mcp_server.tool()
-    async def get_secret(folder: str, item_name: str) -> str:
-        """Retrieve a secret value from Vaultwarden."""
+    async def get_secret(folder: str, item_name: str, item_id: str | None = None) -> str:
+        """Retrieve a secret value from Vaultwarden.
+
+        If multiple items share the same (folder, item_name), pass the
+        ``item_id`` from ``list_secrets`` to disambiguate. Without
+        ``item_id`` the oldest non-deleted match is returned
+        deterministically.
+        """
         try:
-            return await _require_client().get_secret(folder, item_name)
+            return await _require_client().get_secret(folder, item_name, item_id=item_id)
         except (NotFoundError, ForbiddenError, DuplicateError, InternalError):
             raise
         except Exception as e:
             raise InternalError(str(e)) from e
 
     @mcp_server.tool()
-    async def get_login(folder: str, item_name: str) -> dict:
-        """Retrieve a full login entry (username and password) from Vaultwarden."""
+    async def get_login(
+        folder: str, item_name: str, item_id: str | None = None
+    ) -> dict:
+        """Retrieve a full login entry (username and password) from Vaultwarden.
+
+        See ``get_secret`` for the ``item_id`` disambiguation rule.
+        """
         try:
-            return await _require_client().get_login(folder, item_name)
+            return await _require_client().get_login(folder, item_name, item_id=item_id)
         except (NotFoundError, ForbiddenError, DuplicateError, InternalError):
             raise
         except Exception as e:
@@ -229,10 +240,15 @@ def _register_tools(mcp_server: FastMCP) -> None:
             raise InternalError(str(e)) from e
 
     @mcp_server.tool()
-    async def edit_secret(folder: str, item_name: str, value: str) -> dict:
-        """Update an existing secret's value."""
+    async def edit_secret(
+        folder: str, item_name: str, value: str, item_id: str | None = None
+    ) -> dict:
+        """Update an existing secret's value.
+
+        See ``get_secret`` for the ``item_id`` disambiguation rule.
+        """
         try:
-            await _require_client().edit_secret(folder, item_name, value)
+            await _require_client().edit_secret(folder, item_name, value, item_id=item_id)
             return {"ok": True}
         except (NotFoundError, ForbiddenError, InternalError):
             raise
@@ -240,10 +256,15 @@ def _register_tools(mcp_server: FastMCP) -> None:
             raise InternalError(str(e)) from e
 
     @mcp_server.tool()
-    async def delete_secret(folder: str, item_name: str) -> dict:
-        """Soft-delete a secret (moves to trash, recoverable for 30 days)."""
+    async def delete_secret(
+        folder: str, item_name: str, item_id: str | None = None
+    ) -> dict:
+        """Soft-delete a secret (moves to trash, recoverable for 30 days).
+
+        See ``get_secret`` for the ``item_id`` disambiguation rule.
+        """
         try:
-            await _require_client().delete_secret(folder, item_name)
+            await _require_client().delete_secret(folder, item_name, item_id=item_id)
             return {"ok": True}
         except (NotFoundError, ForbiddenError, InternalError):
             raise
@@ -251,10 +272,15 @@ def _register_tools(mcp_server: FastMCP) -> None:
             raise InternalError(str(e)) from e
 
     @mcp_server.tool()
-    async def recover_secret(folder: str, item_name: str) -> dict:
-        """Recover a soft-deleted secret from trash."""
+    async def recover_secret(
+        folder: str, item_name: str, item_id: str | None = None
+    ) -> dict:
+        """Recover a soft-deleted secret from trash.
+
+        Preferentially picks the trashed version when duplicates exist.
+        """
         try:
-            await _require_client().recover_secret(folder, item_name)
+            await _require_client().recover_secret(folder, item_name, item_id=item_id)
             return {"ok": True}
         except (NotFoundError, ForbiddenError, InternalError):
             raise
@@ -294,10 +320,20 @@ def _register_tools(mcp_server: FastMCP) -> None:
             raise InternalError(str(e)) from e
 
     @mcp_server.tool()
-    async def move_secret(folder: str, item_name: str, target_folder: str) -> dict:
-        """Move a secret to a different folder."""
+    async def move_secret(
+        folder: str,
+        item_name: str,
+        target_folder: str,
+        item_id: str | None = None,
+    ) -> dict:
+        """Move a secret to a different folder.
+
+        See ``get_secret`` for the ``item_id`` disambiguation rule.
+        """
         try:
-            await _require_client().move_secret(folder, item_name, target_folder)
+            await _require_client().move_secret(
+                folder, item_name, target_folder, item_id=item_id
+            )
             return {"ok": True}
         except (NotFoundError, ForbiddenError, InternalError):
             raise
@@ -305,10 +341,20 @@ def _register_tools(mcp_server: FastMCP) -> None:
             raise InternalError(str(e)) from e
 
     @mcp_server.tool()
-    async def rename_secret(folder: str, item_name: str, new_name: str) -> dict:
-        """Rename a secret (keeps the same value and folder)."""
+    async def rename_secret(
+        folder: str,
+        item_name: str,
+        new_name: str,
+        item_id: str | None = None,
+    ) -> dict:
+        """Rename a secret (keeps the same value and folder).
+
+        See ``get_secret`` for the ``item_id`` disambiguation rule.
+        """
         try:
-            await _require_client().rename_secret(folder, item_name, new_name)
+            await _require_client().rename_secret(
+                folder, item_name, new_name, item_id=item_id
+            )
             return {"ok": True}
         except (NotFoundError, ForbiddenError, ConflictError, InternalError):
             raise

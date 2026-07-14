@@ -53,6 +53,7 @@ class _Folder:
 @dataclass(slots=True)
 class _SecretItem:
     name: str
+    item_id: str
     password: str
 
 
@@ -219,6 +220,30 @@ class VaultwardenClient:
         login = item.get("login") or {}
         return login.get("password") or ""
 
+    @staticmethod
+    def _pick_one(matches: list[dict], *, prefer_trashed: bool = False) -> dict:
+        """Disambiguate a list of ciphers with the same name.
+
+        Default (``prefer_trashed=False``): prefer non-deleted (alive) items,
+        picking the oldest by ``revisionDate`` (tie-break: ``creationDate``).
+        When every candidate is trashed, fall back to the oldest trashed one.
+
+        ``prefer_trashed=True`` (used by ``recover_secret``): prefer trashed
+        items, falling back to the oldest alive one if none are trashed.
+        """
+        if not matches:
+            raise ValueError("_pick_one requires at least one match")
+        if prefer_trashed:
+            primary = [m for m in matches if m.get("deletedDate")]
+            fallback = [m for m in matches if not m.get("deletedDate")]
+        else:
+            primary = [m for m in matches if not m.get("deletedDate")]
+            fallback = [m for m in matches if m.get("deletedDate")]
+        pool = primary or fallback
+        def _sort_key(m: dict) -> str:
+            return m.get("revisionDate") or m.get("creationDate") or ""
+        return min(pool, key=_sort_key)
+
     # -- tool operations -----------------------------------------------------
 
     async def _all_secrets(self) -> dict[str, list[_SecretItem]]:
@@ -240,12 +265,18 @@ class VaultwardenClient:
             if folder_name not in result:
                 result[folder_name] = []
             result[folder_name].append(
-                _SecretItem(name=item["name"], password=self._item_password(item))
+                _SecretItem(
+                    name=item["name"],
+                    item_id=item["id"],
+                    password=self._item_password(item),
+                )
             )
 
         return result
 
-    async def get_secret(self, folder: str, item_name: str) -> str:
+    async def get_secret(
+        self, folder: str, item_name: str, item_id: str | None = None
+    ) -> str:
         if self._allowed is not None and folder not in self._allowed:
             raise ForbiddenError(f"Folder not in allowed_folders: {folder}")
 
@@ -255,23 +286,31 @@ class VaultwardenClient:
             raise NotFoundError(f"Folder not found: {folder}")
 
         ciphers = await self._fetch_all_ciphers()
-        matches: list[dict] = []
-        for item in ciphers:
-            if not self._is_mcp_secret(item):
-                continue
-            if item.get("folderId") != f.id:
-                continue
-            if item["name"] == item_name:
-                matches.append(item)
-
-        if len(matches) == 0:
+        matches: list[dict] = [
+            c for c in ciphers
+            if self._is_mcp_secret(c)
+            and c.get("folderId") == f.id
+            and c["name"] == item_name
+        ]
+        if not matches:
             raise NotFoundError(f"Item not found: {item_name}")
-        if len(matches) > 1:
-            raise DuplicateError(f"Multiple items named '{item_name}' in folder '{folder}'")
 
-        return self._item_password(matches[0])
+        chosen: dict
+        if item_id is not None:
+            by_id = [c for c in matches if c["id"] == item_id]
+            if not by_id:
+                raise NotFoundError(
+                    f"Item not found: {item_name} (item_id={item_id})"
+                )
+            chosen = by_id[0]
+        else:
+            chosen = self._pick_one(matches)
 
-    async def get_login(self, folder: str, item_name: str) -> dict:
+        return self._item_password(chosen)
+
+    async def get_login(
+        self, folder: str, item_name: str, item_id: str | None = None
+    ) -> dict:
         if self._allowed is not None and folder not in self._allowed:
             raise ForbiddenError(f"Folder not in allowed_folders: {folder}")
 
@@ -281,26 +320,38 @@ class VaultwardenClient:
             raise NotFoundError(f"Folder not found: {folder}")
 
         ciphers = await self._fetch_all_ciphers()
-        matches: list[dict] = []
-        for item in ciphers:
-            if not self._is_mcp_secret(item):
-                continue
-            if item.get("folderId") != f.id:
-                continue
-            if item["name"] == item_name:
-                matches.append(item)
-
-        if len(matches) == 0:
+        matches: list[dict] = [
+            c for c in ciphers
+            if self._is_mcp_secret(c)
+            and c.get("folderId") == f.id
+            and c["name"] == item_name
+        ]
+        if not matches:
             raise NotFoundError(f"Item not found: {item_name}")
-        if len(matches) > 1:
-            raise DuplicateError(f"Multiple items named '{item_name}' in folder '{folder}'")
+
+        chosen: dict
+        if item_id is not None:
+            by_id = [c for c in matches if c["id"] == item_id]
+            if not by_id:
+                raise NotFoundError(
+                    f"Item not found: {item_name} (item_id={item_id})"
+                )
+            chosen = by_id[0]
+        else:
+            chosen = self._pick_one(matches)
 
         return {
-            "username": self._item_username(matches[0]),
-            "password": self._item_password(matches[0]),
+            "username": self._item_username(chosen),
+            "password": self._item_password(chosen),
         }
 
     async def list_secrets(self, folder: str | None = None) -> list[dict]:
+        """List available secrets in the given folder, or all folders if folder
+        is None. The 'items' field contains a list of dicts (item_id, name,
+        deleted) so callers can disambiguate duplicate names.
+
+        Returns [] for unknown folders (consistent with prior behaviour).
+        """
         if folder is not None:
             if self._allowed is not None and folder not in self._allowed:
                 return []
@@ -311,13 +362,20 @@ class VaultwardenClient:
                 return []
 
             ciphers = await self._fetch_all_ciphers()
-            item_names: list[str] = []
+            items: list[dict] = []
             for item in ciphers:
                 if not self._is_mcp_secret(item):
                     continue
                 if item.get("folderId") == f.id:
-                    item_names.append(item["name"])
-            return [] if not item_names else [{"folder": folder, "items": item_names}]
+                    items.append({
+                        "item_id": item["id"],
+                        "name": item["name"],
+                        "deleted": bool(item.get("deletedDate")),
+                    })
+            if not items:
+                return []
+            items.sort(key=lambda d: d["name"])
+            return [{"folder": folder, "items": items}]
 
         secrets = await self._all_secrets()
         result: list[dict] = []
@@ -326,7 +384,13 @@ class VaultwardenClient:
                 continue
             if not items:
                 continue
-            result.append({"folder": folder_name, "items": sorted(i.name for i in items)})
+            result.append({
+                "folder": folder_name,
+                "items": sorted(
+                    {"item_id": i.item_id, "name": i.name}
+                    for i in items
+                ),
+            })
         return result
 
     # -- mutations (write tools) ---------------------------------------------
@@ -343,19 +407,43 @@ class VaultwardenClient:
             raise NotFoundError(f"Folder not found: {folder}")
         return f
 
-    async def _find_item(self, folder_id: str, item_name: str) -> dict:
+    async def _find_item(
+        self,
+        folder_id: str,
+        item_name: str,
+        *,
+        item_id: str | None = None,
+        include_trashed: bool = False,
+        prefer_trashed: bool = False,
+    ) -> dict:
+        """Find a cipher by folder+name (or by item_id for disambiguation).
+
+        ``include_trashed`` controls whether soft-deleted ciphers are matched.
+        For writes (edit/delete/rename/move) we exclude trashed (the prior
+        behaviour). For ``recover_secret`` we prefer trashed.
+
+        If ``item_id`` is given, we look it up directly and raise NotFoundError
+        if the id doesn't exist in the matching name set. Otherwise we use
+        ``_pick_one`` to disambiguate duplicates deterministically.
+        """
         ciphers = await self._fetch_all_ciphers()
-        matches = [
-            c for c in ciphers
-            if c.get("folderId") == folder_id
-            and c["name"] == item_name
-            and not c.get("deletedDate")
-        ]
-        if len(matches) == 0:
+        candidates: list[dict] = []
+        for c in ciphers:
+            if c.get("folderId") != folder_id:
+                continue
+            if c["name"] != item_name:
+                continue
+            if not include_trashed and c.get("deletedDate"):
+                continue
+            candidates.append(c)
+        if not candidates:
             raise NotFoundError(f"Item not found: {item_name}")
-        if len(matches) > 1:
-            raise DuplicateError(f"Multiple items named '{item_name}'")
-        return matches[0]
+        if item_id is not None:
+            for c in candidates:
+                if c["id"] == item_id:
+                    return c
+            raise NotFoundError(f"Item not found: {item_name} (item_id={item_id})")
+        return self._pick_one(candidates, prefer_trashed=prefer_trashed)
 
     async def add_secret(self, folder: str, item_name: str, value: str) -> None:
         f = await self._require_folder(folder)
@@ -417,9 +505,11 @@ class VaultwardenClient:
         except httpx.HTTPError as e:
             raise InternalError(f"Failed to create login: {e}") from e
 
-    async def edit_secret(self, folder: str, item_name: str, value: str) -> None:
+    async def edit_secret(
+        self, folder: str, item_name: str, value: str, item_id: str | None = None
+    ) -> None:
         f = await self._require_folder(folder)
-        item = await self._find_item(f.id, item_name)
+        item = await self._find_item(f.id, item_name, item_id=item_id)
         if not self._is_mcp_secret(item):
             raise NotFoundError(f"Item not an MCP secret: {item_name}")
 
@@ -443,9 +533,11 @@ class VaultwardenClient:
         except httpx.HTTPError as e:
             raise InternalError(f"Failed to update secret: {e}") from e
 
-    async def delete_secret(self, folder: str, item_name: str) -> None:
+    async def delete_secret(
+        self, folder: str, item_name: str, item_id: str | None = None
+    ) -> None:
         f = await self._require_folder(folder)
-        item = await self._find_item(f.id, item_name)
+        item = await self._find_item(f.id, item_name, item_id=item_id)
         token = await self._access_token()
         http = await self._get_http()
         try:
@@ -457,7 +549,9 @@ class VaultwardenClient:
         except httpx.HTTPError as e:
             raise InternalError(f"Failed to delete secret: {e}") from e
 
-    async def recover_secret(self, folder: str, item_name: str) -> None:
+    async def recover_secret(
+        self, folder: str, item_name: str, item_id: str | None = None
+    ) -> None:
         self._check_allowed(folder)
         await self._ensure_folders()
         f = self._resolve_folder(folder)
@@ -465,18 +559,30 @@ class VaultwardenClient:
             raise NotFoundError(f"Folder not found: {folder}")
 
         ciphers = await self._fetch_all_ciphers()
-        matches = [
-            c for c in ciphers
-            if c.get("folderId") == f.id and c["name"] == item_name
-        ]
-        if len(matches) == 0:
-            raise NotFoundError(f"Item not found in trash: {item_name}")
+        # For recover we look at the trashed pool first (prefer_trashed=True)
+        # but fall back to alive items if nothing is trashed — that matches
+        # the prior behaviour of picking the (single) match without filter.
+        candidates: list[dict] = []
+        for c in ciphers:
+            if c.get("folderId") == f.id and c["name"] == item_name:
+                candidates.append(c)
+        if not candidates:
+            raise NotFoundError(f"Item not found: {item_name}")
+        if item_id is not None:
+            for c in candidates:
+                if c["id"] == item_id:
+                    chosen = c
+                    break
+            else:
+                raise NotFoundError(f"Item not found: {item_name} (item_id={item_id})")
+        else:
+            chosen = self._pick_one(candidates, prefer_trashed=True)
 
         token = await self._access_token()
         http = await self._get_http()
         try:
             resp = await http.put(
-                f"{self._url}/api/ciphers/{matches[0]['id']}/restore",
+                f"{self._url}/api/ciphers/{chosen['id']}/restore",
                 headers=self._auth_headers(token),
             )
             resp.raise_for_status()
@@ -564,9 +670,15 @@ class VaultwardenClient:
         if old_allowed is not None and folder in old_allowed:
             old_allowed[old_allowed.index(folder)] = new_name
 
-    async def move_secret(self, folder: str, item_name: str, target_folder: str) -> None:
+    async def move_secret(
+        self,
+        folder: str,
+        item_name: str,
+        target_folder: str,
+        item_id: str | None = None,
+    ) -> None:
         f = await self._require_folder(folder)
-        item = await self._find_item(f.id, item_name)
+        item = await self._find_item(f.id, item_name, item_id=item_id)
         if not self._is_mcp_secret(item):
             raise NotFoundError(f"Item not an MCP secret: {item_name}")
         tf = await self._require_folder(target_folder)
@@ -583,9 +695,15 @@ class VaultwardenClient:
         except httpx.HTTPError as e:
             raise InternalError(f"Failed to move secret: {e}") from e
 
-    async def rename_secret(self, folder: str, item_name: str, new_name: str) -> None:
+    async def rename_secret(
+        self,
+        folder: str,
+        item_name: str,
+        new_name: str,
+        item_id: str | None = None,
+    ) -> None:
         f = await self._require_folder(folder)
-        item = await self._find_item(f.id, item_name)
+        item = await self._find_item(f.id, item_name, item_id=item_id)
         if not self._is_mcp_secret(item):
             raise NotFoundError(f"Item not an MCP secret: {item_name}")
         try:
@@ -605,6 +723,30 @@ class VaultwardenClient:
             resp.raise_for_status()
         except httpx.HTTPError as e:
             raise InternalError(f"Failed to rename secret: {e}") from e
+
+    async def list_trash(self) -> list[dict]:
+        """List MCP-tagged soft-deleted items (trash). Each entry has
+        item_id, name, folder, and deleted_date (the original deletion ts
+        from Vaultwarden, useful for the 30-day expiry).
+        """
+        await self._ensure_folders()
+        ciphers = await self._fetch_all_ciphers()
+        folder_ids = {f.id: f.name for f in self._folders.values()}
+        result: list[dict] = []
+        for c in ciphers:
+            if not c.get("deletedDate"):
+                continue
+            if not self._is_mcp_secret(c):
+                continue
+            result.append({
+                "item_id": c["id"],
+                "name": c["name"],
+                "folder": folder_ids.get(c.get("folderId", ""), c.get("folderId", "")),
+                "deleted_date": c.get("deletedDate"),
+            })
+        # Newest first
+        result.sort(key=lambda d: d.get("deleted_date") or "", reverse=True)
+        return result
 
     async def empty_trash(self) -> None:
         await self._ensure_folders()
