@@ -9,7 +9,7 @@ import sys
 from collections.abc import AsyncIterator
 from urllib.parse import parse_qs
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server import CacheHint, MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.responses import JSONResponse
 import uvicorn
@@ -76,7 +76,7 @@ class _CORSMiddleware:
         if scope["method"] == "OPTIONS":
             resp_headers = [
                 (b"access-control-allow-methods", b"GET, POST, DELETE, OPTIONS"),
-                (b"access-control-allow-headers", b"authorization, content-type, accept, mcp-session-id, mcp-protocol-version, last-event-id, x-api-key"),
+                (b"access-control-allow-headers", b"authorization, content-type, accept, mcp-session-id, mcp-protocol-version, mcp-method, mcp-name, mcp-param-*, last-event-id, x-api-key"),
                 (b"access-control-expose-headers", b"mcp-session-id, mcp-protocol-version, content-type"),
             ]
             if matched:
@@ -146,7 +146,7 @@ class _AuthMiddleware:
 
 def _build_lifespan(config_path: str):
     @contextlib.asynccontextmanager
-    async def lifespan(_server: FastMCP) -> AsyncIterator[None]:
+    async def lifespan(_server: MCPServer) -> AsyncIterator[None]:
         global _client
         logger = logging.getLogger(__name__)
         logger.info("Loading config from %s", config_path)
@@ -175,7 +175,7 @@ def _build_lifespan(config_path: str):
 # -- tools ----------------------------------------------------------------
 
 
-def _register_tools(mcp_server: FastMCP) -> None:
+def _register_tools(mcp_server: MCPServer) -> None:
     @mcp_server.tool()
     async def get_secret(folder: str, item_name: str, item_id: str | None = None) -> str:
         """Retrieve a secret value from Vaultwarden.
@@ -407,7 +407,7 @@ def _register_tools(mcp_server: FastMCP) -> None:
 # -- routes ----------------------------------------------------------------
 
 
-def _register_routes(mcp_server: FastMCP) -> None:
+def _register_routes(mcp_server: MCPServer) -> None:
     @mcp_server.custom_route("/", methods=["GET"], include_in_schema=False)
     async def root_route(request):
         del request
@@ -429,14 +429,23 @@ def _build_transport_security() -> TransportSecuritySettings:
 # -- main -----------------------------------------------------------------
 
 
-def _build_app(mcp_server: FastMCP) -> object:
+def _build_app(mcp_server: MCPServer) -> object:
     raw_tokens = os.environ.get("VAULTWARDEN_MCP_AUTH_TOKEN")
     auth_tokens: list[str] | None = None
     if raw_tokens:
         auth_tokens = [t.strip() for t in raw_tokens.split(",") if t.strip()]
         logging.getLogger(__name__).info("Auth enabled (%d token(s))", len(auth_tokens))
 
-    inner = _AuthMiddleware(mcp_server.streamable_http_app(), auth_tokens)
+    inner = _AuthMiddleware(
+        mcp_server.streamable_http_app(
+            streamable_http_path="/mcp",
+            json_response=True,
+            stateless_http=True,
+            host=os.environ.get("HOST", "0.0.0.0"),
+            transport_security=_build_transport_security(),
+        ),
+        auth_tokens,
+    )
     return _CORSMiddleware(inner)
 
 
@@ -450,15 +459,14 @@ def main() -> None:
 
     _setup_logging()
 
-    mcp = FastMCP(
+    mcp = MCPServer(
         "vaultwarden-secrets",
-        host=os.environ.get("HOST", "0.0.0.0"),
-        port=int(os.environ.get("PORT", "8000")),
-        streamable_http_path="/mcp",
-        json_response=True,
-        stateless_http=True,
         lifespan=_build_lifespan(args.config),
-        transport_security=_build_transport_security(),
+        version="0.1.0",
+        cache_hints={
+            "server/discover": CacheHint(ttl_ms=300_000, scope="public"),
+            "tools/list": CacheHint(ttl_ms=300_000, scope="private"),
+        },
     )
 
     _register_tools(mcp)

@@ -2,6 +2,10 @@
 
 MCP server that lets AI agents retrieve secrets from Vaultwarden without ever holding Vaultwarden credentials.
 
+The server uses the official MCP Python SDK v2 and supports the
+`2026-07-28` stateless protocol via `server/discover`, with a stateless legacy
+fallback for clients that still use `initialize`.
+
 ## Architecture
 
 ```

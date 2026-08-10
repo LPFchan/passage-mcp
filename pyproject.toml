@@ -9,7 +9,7 @@ description = "MCP server for AI agents to retrieve secrets from Vaultwarden"
 requires-python = ">=3.11"
 dependencies = [
     "httpx>=0.28.1,<1.0",
-    "mcp>=1.27.1,<2.0",
+    "mcp>=2.0.0,<3.0",
 ]
 
 [project.optional-dependencies]
