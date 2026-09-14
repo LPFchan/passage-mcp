@@ -394,7 +394,7 @@ def _build_app(mcp_server: MCPServer) -> object:
         streamable_http_path="/mcp",
         json_response=True,
         stateless_http=True,
-        host=os.environ.get("HOST", "0.0.0.0"),
+        host=os.environ.get("HOST", "127.0.0.1"),
         transport_security=_build_transport_security(),
     )
     return _CORSMiddleware(inner)
@@ -435,7 +435,7 @@ def main() -> None:
 
     uvicorn.run(
         app,
-        host=os.environ.get("HOST", "0.0.0.0"),
+        host=os.environ.get("HOST", "127.0.0.1"),
         port=int(os.environ.get("PORT", "8000")),
         forwarded_allow_ips="*",
         proxy_headers=True,

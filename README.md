@@ -11,6 +11,8 @@ Common Auth gateway protects it with the `vaultwarden-secrets` scope. Send a
 Common Auth token as `Authorization: Bearer <token>` or `X-API-Key: <token>`.
 The HTTP backend does not authenticate requests itself and must remain bound to
 localhost behind the gateway. Stdio clients are unaffected.
+Standalone HTTP runs default to loopback; the container explicitly binds
+`0.0.0.0` only inside its loopback-published Docker boundary.
 
 ## Architecture
 
