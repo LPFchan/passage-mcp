@@ -7,7 +7,6 @@ import logging
 import os
 import sys
 from collections.abc import AsyncIterator
-from urllib.parse import parse_qs
 
 from mcp.server import CacheHint, MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
@@ -100,45 +99,6 @@ class _CORSMiddleware:
             await send(message)
 
         await self.app(scope, receive, send_with_cors)
-
-
-# -- auth middleware -------------------------------------------------------
-
-
-class _AuthMiddleware:
-    def __init__(self, app, tokens: list[str] | None):
-        self.app = app
-        self._tokens = set(tokens) if tokens else None
-
-    async def __call__(self, scope, receive, send):
-        if scope["type"] != "http" or self._tokens is None:
-            await self.app(scope, receive, send)
-            return
-
-        path = scope.get("path", "")
-        if path == "/healthz":
-            await self.app(scope, receive, send)
-            return
-
-        headers = dict(scope.get("headers", []))
-        auth_header = headers.get(b"authorization", b"").decode()
-        if auth_header.startswith("Bearer ") and auth_header[7:] in self._tokens:
-            await self.app(scope, receive, send)
-            return
-
-        token_values = parse_qs(scope.get("query_string", b"").decode()).get("token", [])
-        if self._tokens & set(token_values):
-            await self.app(scope, receive, send)
-            return
-
-        first_segment = path.strip("/").split("/")[0] if path.strip("/") else ""
-        if first_segment in self._tokens:
-            scope["path"] = "/" + "/".join(path.strip("/").split("/")[1:])
-            await self.app(scope, receive, send)
-            return
-
-        await send({"type": "http.response.start", "status": 401, "headers": [(b"content-type", b"application/json")]})
-        await send({"type": "http.response.body", "body": b'{"error":"Unauthorized"}'})
 
 
 # -- lifespan --------------------------------------------------------------
@@ -430,28 +390,17 @@ def _build_transport_security() -> TransportSecuritySettings:
 
 
 def _build_app(mcp_server: MCPServer) -> object:
-    raw_tokens = os.environ.get("VAULTWARDEN_MCP_AUTH_TOKEN")
-    auth_tokens: list[str] | None = None
-    if raw_tokens:
-        auth_tokens = [t.strip() for t in raw_tokens.split(",") if t.strip()]
-        logging.getLogger(__name__).info("Auth enabled (%d token(s))", len(auth_tokens))
-
-    inner = _AuthMiddleware(
-        mcp_server.streamable_http_app(
-            streamable_http_path="/mcp",
-            json_response=True,
-            stateless_http=True,
-            host=os.environ.get("HOST", "0.0.0.0"),
-            transport_security=_build_transport_security(),
-        ),
-        auth_tokens,
+    inner = mcp_server.streamable_http_app(
+        streamable_http_path="/mcp",
+        json_response=True,
+        stateless_http=True,
+        host=os.environ.get("HOST", "0.0.0.0"),
+        transport_security=_build_transport_security(),
     )
     return _CORSMiddleware(inner)
 
 
 def main() -> None:
-    global _auth_app
-
     parser = argparse.ArgumentParser(prog="vaultwarden-mcp-server")
     parser.add_argument("--config", required=True, help="Path to config.json")
     parser.add_argument("--stdio", action="store_true", help="Run in stdio mode (default: HTTP+SSE)")

@@ -6,16 +6,19 @@ The server uses the official MCP Python SDK v2 and supports the
 `2026-07-28` stateless protocol via `server/discover`, with a stateless legacy
 fallback for clients that still use `initialize`.
 
+The production HTTP endpoint is `https://vault.lost.plus/mcp`. The shared
+Common Auth gateway protects it with the `vaultwarden-secrets` scope. Send a
+Common Auth token as `Authorization: Bearer <token>` or `X-API-Key: <token>`.
+The HTTP backend does not authenticate requests itself and must remain bound to
+localhost behind the gateway. Stdio clients are unaffected.
+
 ## Architecture
 
 ```
-AI Agent harness
-   |  stdio
-   v
-MCP Server ---- HTTP ---- Vaultwarden (Docker)
-   |                          |
-   |   OAuth2 token           |
-   +-- client_id/secret ------+  Folders of login items
+AI Agent harness ---- HTTPS/Common Auth ---- MCP Server ---- HTTP ---- Vaultwarden
+                                      |                       |
+                                      |   OAuth2 token        |
+                                      +-- client_id/secret ---+  Folders of login items
 ```
 
 ## Setup
