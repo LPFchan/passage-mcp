@@ -14,18 +14,11 @@ from starlette.responses import JSONResponse
 import uvicorn
 
 from .config import Config
-from .vaultwarden import (
-    ConflictError,
-    DuplicateError,
-    ForbiddenError,
-    InternalError,
-    NotFoundError,
-    VaultwardenClient,
-)
+from .store import AgeStore, InternalError, StoreError
 
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(message)s"
 
-_client: VaultwardenClient | None = None
+_client: AgeStore | None = None
 
 
 def _setup_logging() -> None:
@@ -34,12 +27,11 @@ def _setup_logging() -> None:
         format=LOG_FORMAT,
         stream=sys.stderr,
     )
-    logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("mcp").setLevel(logging.WARNING)
     logging.getLogger("uvicorn").setLevel(logging.WARNING)
 
 
-def _require_client() -> VaultwardenClient:
+def _require_client() -> AgeStore:
     if _client is None:
         raise InternalError("Server not initialized")
     return _client
@@ -113,12 +105,13 @@ def _build_lifespan(config_path: str):
 
         config = Config.from_path(config_path)
         logger.info(
-            "Configured for %s (allowed_folders=%s)",
-            config.vaultwarden_url,
+            "Store %s, identity %s (allowed_folders=%s)",
+            config.store_dir,
+            config.identity_file,
             config.allowed_folders if config.allowed_folders is not None else "all",
         )
 
-        _client = VaultwardenClient(config)
+        _client = AgeStore(config)
         await _client.validate()
         logger.info("Startup validation passed")
 
@@ -137,32 +130,21 @@ def _build_lifespan(config_path: str):
 
 def _register_tools(mcp_server: MCPServer) -> None:
     @mcp_server.tool()
-    async def get_secret(folder: str, item_name: str, item_id: str | None = None) -> str:
-        """Retrieve a secret value from Vaultwarden.
-
-        If multiple items share the same (folder, item_name), pass the
-        ``item_id`` from ``list_secrets`` to disambiguate. Without
-        ``item_id`` the oldest non-deleted match is returned
-        deterministically.
-        """
+    async def get_secret(folder: str, item_name: str) -> str:
+        """Retrieve a secret value from the encrypted store."""
         try:
-            return await _require_client().get_secret(folder, item_name, item_id=item_id)
-        except (NotFoundError, ForbiddenError, DuplicateError, InternalError):
+            return await _require_client().get_secret(folder, item_name)
+        except StoreError:
             raise
         except Exception as e:
             raise InternalError(str(e)) from e
 
     @mcp_server.tool()
-    async def get_login(
-        folder: str, item_name: str, item_id: str | None = None
-    ) -> dict:
-        """Retrieve a full login entry (username and password) from Vaultwarden.
-
-        See ``get_secret`` for the ``item_id`` disambiguation rule.
-        """
+    async def get_login(folder: str, item_name: str) -> dict:
+        """Retrieve a full login entry (username and password) from the encrypted store."""
         try:
-            return await _require_client().get_login(folder, item_name, item_id=item_id)
-        except (NotFoundError, ForbiddenError, DuplicateError, InternalError):
+            return await _require_client().get_login(folder, item_name)
+        except StoreError:
             raise
         except Exception as e:
             raise InternalError(str(e)) from e
@@ -172,18 +154,18 @@ def _register_tools(mcp_server: MCPServer) -> None:
         """List available secret names (never the values themselves)."""
         try:
             return await _require_client().list_secrets(folder)
-        except InternalError:
+        except StoreError:
             raise
         except Exception as e:
             raise InternalError(str(e)) from e
 
     @mcp_server.tool()
     async def add_secret(folder: str, item_name: str, value: str) -> dict:
-        """Add a new secret to a folder. Auto-tags with mcp-secret:// URI."""
+        """Add a new secret to a folder. The folder must already exist."""
         try:
             await _require_client().add_secret(folder, item_name, value)
             return {"ok": True}
-        except (NotFoundError, ForbiddenError, ConflictError, InternalError):
+        except StoreError:
             raise
         except Exception as e:
             raise InternalError(str(e)) from e
@@ -194,55 +176,40 @@ def _register_tools(mcp_server: MCPServer) -> None:
         try:
             await _require_client().add_login(folder, item_name, username, password)
             return {"ok": True}
-        except (NotFoundError, ForbiddenError, ConflictError, InternalError):
+        except StoreError:
             raise
         except Exception as e:
             raise InternalError(str(e)) from e
 
     @mcp_server.tool()
-    async def edit_secret(
-        folder: str, item_name: str, value: str, item_id: str | None = None
-    ) -> dict:
-        """Update an existing secret's value.
-
-        See ``get_secret`` for the ``item_id`` disambiguation rule.
-        """
+    async def edit_secret(folder: str, item_name: str, value: str) -> dict:
+        """Update an existing secret's value."""
         try:
-            await _require_client().edit_secret(folder, item_name, value, item_id=item_id)
+            await _require_client().edit_secret(folder, item_name, value)
             return {"ok": True}
-        except (NotFoundError, ForbiddenError, InternalError):
+        except StoreError:
             raise
         except Exception as e:
             raise InternalError(str(e)) from e
 
     @mcp_server.tool()
-    async def delete_secret(
-        folder: str, item_name: str, item_id: str | None = None
-    ) -> dict:
-        """Soft-delete a secret (moves to trash, recoverable for 30 days).
-
-        See ``get_secret`` for the ``item_id`` disambiguation rule.
-        """
+    async def delete_secret(folder: str, item_name: str) -> dict:
+        """Soft-delete a secret (moves it to trash; recover with recover_secret)."""
         try:
-            await _require_client().delete_secret(folder, item_name, item_id=item_id)
+            await _require_client().delete_secret(folder, item_name)
             return {"ok": True}
-        except (NotFoundError, ForbiddenError, InternalError):
+        except StoreError:
             raise
         except Exception as e:
             raise InternalError(str(e)) from e
 
     @mcp_server.tool()
-    async def recover_secret(
-        folder: str, item_name: str, item_id: str | None = None
-    ) -> dict:
-        """Recover a soft-deleted secret from trash.
-
-        Preferentially picks the trashed version when duplicates exist.
-        """
+    async def recover_secret(folder: str, item_name: str) -> dict:
+        """Recover a soft-deleted secret from trash."""
         try:
-            await _require_client().recover_secret(folder, item_name, item_id=item_id)
+            await _require_client().recover_secret(folder, item_name)
             return {"ok": True}
-        except (NotFoundError, ForbiddenError, InternalError):
+        except StoreError:
             raise
         except Exception as e:
             raise InternalError(str(e)) from e
@@ -253,7 +220,7 @@ def _register_tools(mcp_server: MCPServer) -> None:
         try:
             await _require_client().add_folder(folder)
             return {"ok": True}
-        except (ConflictError, InternalError):
+        except StoreError:
             raise
         except Exception as e:
             raise InternalError(str(e)) from e
@@ -264,7 +231,7 @@ def _register_tools(mcp_server: MCPServer) -> None:
         try:
             await _require_client().delete_folder(folder)
             return {"ok": True}
-        except (NotFoundError, ConflictError, InternalError):
+        except StoreError:
             raise
         except Exception as e:
             raise InternalError(str(e)) from e
@@ -274,59 +241,39 @@ def _register_tools(mcp_server: MCPServer) -> None:
         """List soft-deleted secrets currently in trash."""
         try:
             return await _require_client().list_trash()
-        except InternalError:
+        except StoreError:
             raise
         except Exception as e:
             raise InternalError(str(e)) from e
 
     @mcp_server.tool()
-    async def move_secret(
-        folder: str,
-        item_name: str,
-        target_folder: str,
-        item_id: str | None = None,
-    ) -> dict:
-        """Move a secret to a different folder.
-
-        See ``get_secret`` for the ``item_id`` disambiguation rule.
-        """
+    async def move_secret(folder: str, item_name: str, target_folder: str) -> dict:
+        """Move a secret to a different folder."""
         try:
-            await _require_client().move_secret(
-                folder, item_name, target_folder, item_id=item_id
-            )
+            await _require_client().move_secret(folder, item_name, target_folder)
             return {"ok": True}
-        except (NotFoundError, ForbiddenError, InternalError):
+        except StoreError:
             raise
         except Exception as e:
             raise InternalError(str(e)) from e
 
     @mcp_server.tool()
-    async def rename_secret(
-        folder: str,
-        item_name: str,
-        new_name: str,
-        item_id: str | None = None,
-    ) -> dict:
-        """Rename a secret (keeps the same value and folder).
-
-        See ``get_secret`` for the ``item_id`` disambiguation rule.
-        """
+    async def rename_secret(folder: str, item_name: str, new_name: str) -> dict:
+        """Rename a secret (keeps the same value and folder)."""
         try:
-            await _require_client().rename_secret(
-                folder, item_name, new_name, item_id=item_id
-            )
+            await _require_client().rename_secret(folder, item_name, new_name)
             return {"ok": True}
-        except (NotFoundError, ForbiddenError, ConflictError, InternalError):
+        except StoreError:
             raise
         except Exception as e:
             raise InternalError(str(e)) from e
 
     @mcp_server.tool()
     async def list_folders() -> list[dict]:
-        """List all folders with their IDs."""
+        """List all folders."""
         try:
             return await _require_client().list_folders()
-        except InternalError:
+        except StoreError:
             raise
         except Exception as e:
             raise InternalError(str(e)) from e
@@ -337,7 +284,7 @@ def _register_tools(mcp_server: MCPServer) -> None:
         try:
             await _require_client().rename_folder(folder, new_name)
             return {"ok": True}
-        except (NotFoundError, ConflictError, InternalError):
+        except StoreError:
             raise
         except Exception as e:
             raise InternalError(str(e)) from e
@@ -348,7 +295,7 @@ def _register_tools(mcp_server: MCPServer) -> None:
         try:
             await _require_client().empty_trash()
             return {"ok": True}
-        except InternalError:
+        except StoreError:
             raise
         except Exception as e:
             raise InternalError(str(e)) from e
@@ -358,7 +305,7 @@ def _register_tools(mcp_server: MCPServer) -> None:
         """Search secrets by name across all folders. Returns folder + item_name for each match."""
         try:
             return await _require_client().search_secrets(query)
-        except InternalError:
+        except StoreError:
             raise
         except Exception as e:
             raise InternalError(str(e)) from e
@@ -411,7 +358,7 @@ def main() -> None:
     mcp = MCPServer(
         "vaultwarden-secrets",
         lifespan=_build_lifespan(args.config),
-        version="0.1.0",
+        version="0.2.0",
         cache_hints={
             "server/discover": CacheHint(ttl_ms=300_000, scope="public"),
             "tools/list": CacheHint(ttl_ms=300_000, scope="private"),

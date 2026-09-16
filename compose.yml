@@ -1,23 +1,4 @@
 services:
-  vaultwarden:
-    image: vaultwarden/server:latest
-    container_name: vaultwarden
-    mem_limit: 256m
-    memswap_limit: 256m
-    oom_score_adj: 500
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:8081:80"
-    volumes:
-      - ./vw-data:/data
-    environment:
-      SIGNUPS_ALLOWED: "false"
-      ADMIN_TOKEN: ${VW_ADMIN_TOKEN:?required}
-      LOGIN_RATELIMIT_SECONDS: 5
-      LOGIN_RATELIMIT_MAX_BURST: 100
-      ADMIN_RATELIMIT_SECONDS: 5
-      ADMIN_RATELIMIT_MAX_BURST: 100
-
   vaultwarden-mcp:
     build: .
     container_name: vaultwarden-mcp
@@ -29,14 +10,13 @@ services:
     ports:
       - "127.0.0.1:8002:8000"
     volumes:
+      # ciphertext only; safe to back up
+      - /var/lib/vaultwarden-mcp/store:/store
+      # server's age identity; root:1001 0640 on the host, never inside the store
+      - /etc/vaultwarden-mcp/age-identity:/run/secrets/age-identity:ro
       - ./config/config.json:/config/config.json:ro
     environment:
       HOST: 0.0.0.0
       PORT: 8000
-      VAULTWARDEN_MCP_AUTH_TOKEN: ${VAULTWARDEN_MCP_AUTH_TOKEN:-}
-      VAULTWARDEN_URL: http://vaultwarden:80
-      VAULTWARDEN_CLIENT_ID: ${VAULTWARDEN_CLIENT_ID}
-      VAULTWARDEN_CLIENT_SECRET: ${VAULTWARDEN_CLIENT_SECRET}
-
-    depends_on:
-      - vaultwarden
+      SECRETS_STORE_DIR: /store
+      AGE_IDENTITY_FILE: /run/secrets/age-identity
