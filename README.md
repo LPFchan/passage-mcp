@@ -13,7 +13,7 @@ The server uses the official MCP Python SDK v2 and supports the
 fallback for clients that still use `initialize`.
 
 The production HTTP endpoint is `https://vault.lost.plus/mcp`. The shared
-Common Auth gateway protects it with the `vaultwarden-secrets` scope. Send a
+Common Auth gateway protects it with the `passage` scope. Send a
 Common Auth token as `Authorization: Bearer <token>` or `X-API-Key: <token>`.
 The HTTP backend does not authenticate requests itself and must remain bound to
 localhost behind the gateway. Stdio clients are unaffected.
@@ -76,7 +76,7 @@ Defaults follow passage: store at `~/.passage/store`, identity at
 ```json
 {
   "mcpServers": {
-    "vaultwarden-secrets": {
+    "passage": {
       "command": "uvx",
       "args": ["passage-mcp-server", "--stdio", "--config", "~/.config/passage-mcp/config.json"]
     }

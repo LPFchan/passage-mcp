@@ -271,7 +271,7 @@ def main() -> None:
     _setup_logging()
 
     mcp = MCPServer(
-        "vaultwarden-secrets",
+        "passage",
         lifespan=_build_lifespan(args.config),
         version="0.2.0",
         cache_hints={
