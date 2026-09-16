@@ -4,8 +4,8 @@ Run on the host with the repo venv. Never prints secret values.
 
     .venv/bin/python scripts/migrate_from_vaultwarden.py \
         --db vw-data/db.sqlite3 \
-        --store /var/lib/vaultwarden-mcp/store \
-        --identity /etc/vaultwarden-mcp/age-identity
+        --store /var/lib/passage-mcp/store \
+        --identity /etc/passage-mcp/age-identity
 """
 
 from __future__ import annotations
@@ -19,8 +19,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from vaultwarden_mcp.config import Config  # noqa: E402
-from vaultwarden_mcp.store import SUFFIX, TRASH_DIR, AgeStore  # noqa: E402
+from passage_mcp.config import Config  # noqa: E402
+from passage_mcp.store import SUFFIX, TRASH_DIR, AgeStore  # noqa: E402
 
 
 def load_items(db: Path) -> list[dict]:

@@ -233,7 +233,7 @@ def _register_routes(mcp_server: MCPServer) -> None:
     @mcp_server.custom_route("/", methods=["GET"], include_in_schema=False)
     async def root_route(request):
         del request
-        return JSONResponse({"name": "vaultwarden-mcp", "mcp_path": "/mcp", "healthz": "/healthz"})
+        return JSONResponse({"name": "passage-mcp", "mcp_path": "/mcp", "healthz": "/healthz"})
 
     @mcp_server.custom_route("/healthz", methods=["GET"], include_in_schema=False)
     async def health_route(request):
@@ -263,7 +263,7 @@ def _build_app(mcp_server: MCPServer) -> object:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(prog="vaultwarden-mcp-server")
+    parser = argparse.ArgumentParser(prog="passage-mcp-server")
     parser.add_argument("--config", required=True, help="Path to config.json")
     parser.add_argument("--stdio", action="store_true", help="Run in stdio mode (default: HTTP+SSE)")
     args = parser.parse_args()

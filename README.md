@@ -1,4 +1,4 @@
-# vaultwarden-mcp-server
+# passage-mcp
 
 MCP server that lets AI agents read and manage secrets kept in an
 [age](https://age-encryption.org)-encrypted [passage](https://github.com/FiloSottile/passage)
@@ -57,8 +57,8 @@ Startup fails if the server identity's public key is missing from
 
 | Path | Purpose | Owner / mode |
 | --- | --- | --- |
-| `/var/lib/vaultwarden-mcp/store` | the store (ciphertext only) | `1001:1001` `750` |
-| `/etc/vaultwarden-mcp/age-identity` | server identity | `root:1001` `640` |
+| `/var/lib/passage-mcp/store` | the store (ciphertext only) | `1001:1001` `750` |
+| `/etc/passage-mcp/age-identity` | server identity | `root:1001` `640` |
 | `./config/config.json` | `allowed_folders` | repo, gitignored |
 
 ```
@@ -78,7 +78,7 @@ Defaults follow passage: store at `~/.passage/store`, identity at
   "mcpServers": {
     "vaultwarden-secrets": {
       "command": "uvx",
-      "args": ["vaultwarden-mcp-server", "--stdio", "--config", "~/.config/vaultwarden-mcp/config.json"]
+      "args": ["passage-mcp-server", "--stdio", "--config", "~/.config/passage-mcp/config.json"]
     }
   }
 }

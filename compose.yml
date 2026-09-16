@@ -1,7 +1,7 @@
 services:
-  vaultwarden-mcp:
+  passage-mcp:
     build: .
-    container_name: vaultwarden-mcp
+    container_name: passage-mcp
     user: "1001:1001"
     mem_limit: 128m
     memswap_limit: 128m
@@ -11,9 +11,9 @@ services:
       - "127.0.0.1:8002:8000"
     volumes:
       # ciphertext only; safe to back up
-      - /var/lib/vaultwarden-mcp/store:/store
+      - /var/lib/passage-mcp/store:/store
       # server's age identity; root:1001 0640 on the host, never inside the store
-      - /etc/vaultwarden-mcp/age-identity:/run/secrets/age-identity:ro
+      - /etc/passage-mcp/age-identity:/run/secrets/age-identity:ro
       - ./config/config.json:/config/config.json:ro
     environment:
       HOST: 0.0.0.0

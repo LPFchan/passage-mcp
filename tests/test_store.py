@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from vaultwarden_mcp.config import Config
-from vaultwarden_mcp.store import (
+from passage_mcp.config import Config
+from passage_mcp.store import (
     AgeStore,
     ConflictError,
     ForbiddenError,
