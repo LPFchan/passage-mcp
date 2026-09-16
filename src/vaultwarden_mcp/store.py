@@ -32,6 +32,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from mcp.server.mcpserver.exceptions import ToolError
+
 from .config import Config
 
 logger = logging.getLogger(__name__)
@@ -42,8 +44,12 @@ RECIPIENTS_FILE = ".age-recipients"
 MAX_NAME_LEN = 200
 
 
-class StoreError(Exception):
-    pass
+class StoreError(ToolError):
+    """Anticipated failure: the SDK returns the message to the model as-is.
+
+    Anything else raised inside a tool is treated as a crash by the SDK, which
+    logs the traceback and shows the model only "Error executing tool <name>".
+    """
 
 
 class NotFoundError(StoreError):

@@ -14,7 +14,7 @@ from starlette.responses import JSONResponse
 import uvicorn
 
 from .config import Config
-from .store import AgeStore, InternalError, StoreError
+from .store import AgeStore, InternalError
 
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(message)s"
 
@@ -132,183 +132,98 @@ def _register_tools(mcp_server: MCPServer) -> None:
     @mcp_server.tool()
     async def get_secret(folder: str, item_name: str) -> str:
         """Retrieve a secret value from the encrypted store."""
-        try:
-            return await _require_client().get_secret(folder, item_name)
-        except StoreError:
-            raise
-        except Exception as e:
-            raise InternalError(str(e)) from e
+        return await _require_client().get_secret(folder, item_name)
 
     @mcp_server.tool()
     async def get_login(folder: str, item_name: str) -> dict:
         """Retrieve a full login entry (username and password) from the encrypted store."""
-        try:
-            return await _require_client().get_login(folder, item_name)
-        except StoreError:
-            raise
-        except Exception as e:
-            raise InternalError(str(e)) from e
+        return await _require_client().get_login(folder, item_name)
 
     @mcp_server.tool()
     async def list_secrets(folder: str | None = None) -> list[dict]:
         """List available secret names (never the values themselves)."""
-        try:
-            return await _require_client().list_secrets(folder)
-        except StoreError:
-            raise
-        except Exception as e:
-            raise InternalError(str(e)) from e
+        return await _require_client().list_secrets(folder)
 
     @mcp_server.tool()
     async def add_secret(folder: str, item_name: str, value: str) -> dict:
         """Add a new secret to a folder. The folder must already exist."""
-        try:
-            await _require_client().add_secret(folder, item_name, value)
-            return {"ok": True}
-        except StoreError:
-            raise
-        except Exception as e:
-            raise InternalError(str(e)) from e
+        await _require_client().add_secret(folder, item_name, value)
+        return {"ok": True}
 
     @mcp_server.tool()
     async def add_login(folder: str, item_name: str, username: str, password: str) -> dict:
         """Add a new login entry (username + password) to a folder."""
-        try:
-            await _require_client().add_login(folder, item_name, username, password)
-            return {"ok": True}
-        except StoreError:
-            raise
-        except Exception as e:
-            raise InternalError(str(e)) from e
+        await _require_client().add_login(folder, item_name, username, password)
+        return {"ok": True}
 
     @mcp_server.tool()
     async def edit_secret(folder: str, item_name: str, value: str) -> dict:
         """Update an existing secret's value."""
-        try:
-            await _require_client().edit_secret(folder, item_name, value)
-            return {"ok": True}
-        except StoreError:
-            raise
-        except Exception as e:
-            raise InternalError(str(e)) from e
+        await _require_client().edit_secret(folder, item_name, value)
+        return {"ok": True}
 
     @mcp_server.tool()
     async def delete_secret(folder: str, item_name: str) -> dict:
         """Soft-delete a secret (moves it to trash; recover with recover_secret)."""
-        try:
-            await _require_client().delete_secret(folder, item_name)
-            return {"ok": True}
-        except StoreError:
-            raise
-        except Exception as e:
-            raise InternalError(str(e)) from e
+        await _require_client().delete_secret(folder, item_name)
+        return {"ok": True}
 
     @mcp_server.tool()
     async def recover_secret(folder: str, item_name: str) -> dict:
         """Recover a soft-deleted secret from trash."""
-        try:
-            await _require_client().recover_secret(folder, item_name)
-            return {"ok": True}
-        except StoreError:
-            raise
-        except Exception as e:
-            raise InternalError(str(e)) from e
+        await _require_client().recover_secret(folder, item_name)
+        return {"ok": True}
 
     @mcp_server.tool()
     async def add_folder(folder: str) -> dict:
         """Create a new folder for organizing secrets."""
-        try:
-            await _require_client().add_folder(folder)
-            return {"ok": True}
-        except StoreError:
-            raise
-        except Exception as e:
-            raise InternalError(str(e)) from e
+        await _require_client().add_folder(folder)
+        return {"ok": True}
 
     @mcp_server.tool()
     async def delete_folder(folder: str) -> dict:
         """Delete an empty folder."""
-        try:
-            await _require_client().delete_folder(folder)
-            return {"ok": True}
-        except StoreError:
-            raise
-        except Exception as e:
-            raise InternalError(str(e)) from e
+        await _require_client().delete_folder(folder)
+        return {"ok": True}
 
     @mcp_server.tool()
     async def list_trash() -> list[dict]:
         """List soft-deleted secrets currently in trash."""
-        try:
-            return await _require_client().list_trash()
-        except StoreError:
-            raise
-        except Exception as e:
-            raise InternalError(str(e)) from e
+        return await _require_client().list_trash()
 
     @mcp_server.tool()
     async def move_secret(folder: str, item_name: str, target_folder: str) -> dict:
         """Move a secret to a different folder."""
-        try:
-            await _require_client().move_secret(folder, item_name, target_folder)
-            return {"ok": True}
-        except StoreError:
-            raise
-        except Exception as e:
-            raise InternalError(str(e)) from e
+        await _require_client().move_secret(folder, item_name, target_folder)
+        return {"ok": True}
 
     @mcp_server.tool()
     async def rename_secret(folder: str, item_name: str, new_name: str) -> dict:
         """Rename a secret (keeps the same value and folder)."""
-        try:
-            await _require_client().rename_secret(folder, item_name, new_name)
-            return {"ok": True}
-        except StoreError:
-            raise
-        except Exception as e:
-            raise InternalError(str(e)) from e
+        await _require_client().rename_secret(folder, item_name, new_name)
+        return {"ok": True}
 
     @mcp_server.tool()
     async def list_folders() -> list[dict]:
         """List all folders."""
-        try:
-            return await _require_client().list_folders()
-        except StoreError:
-            raise
-        except Exception as e:
-            raise InternalError(str(e)) from e
+        return await _require_client().list_folders()
 
     @mcp_server.tool()
     async def rename_folder(folder: str, new_name: str) -> dict:
         """Rename a folder."""
-        try:
-            await _require_client().rename_folder(folder, new_name)
-            return {"ok": True}
-        except StoreError:
-            raise
-        except Exception as e:
-            raise InternalError(str(e)) from e
+        await _require_client().rename_folder(folder, new_name)
+        return {"ok": True}
 
     @mcp_server.tool()
     async def empty_trash() -> dict:
         """Permanently delete all soft-deleted items in trash."""
-        try:
-            await _require_client().empty_trash()
-            return {"ok": True}
-        except StoreError:
-            raise
-        except Exception as e:
-            raise InternalError(str(e)) from e
+        await _require_client().empty_trash()
+        return {"ok": True}
 
     @mcp_server.tool()
     async def search_secrets(query: str) -> list[dict]:
         """Search secrets by name across all folders. Returns folder + item_name for each match."""
-        try:
-            return await _require_client().search_secrets(query)
-        except StoreError:
-            raise
-        except Exception as e:
-            raise InternalError(str(e)) from e
+        return await _require_client().search_secrets(query)
 
 
 # -- routes ----------------------------------------------------------------
