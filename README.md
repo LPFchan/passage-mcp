@@ -12,7 +12,7 @@ The server uses the official MCP Python SDK v2 and supports the
 `2026-07-28` stateless protocol via `server/discover`, with a stateless legacy
 fallback for clients that still use `initialize`.
 
-The production HTTP endpoint is `https://vault.lost.plus/mcp`. The shared
+The production HTTP endpoint is `https://passage.lost.plus/mcp`. The shared
 Common Auth gateway protects it with the `passage` scope. Send a
 Common Auth token as `Authorization: Bearer <token>` or `X-API-Key: <token>`.
 The HTTP backend does not authenticate requests itself and must remain bound to

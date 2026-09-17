@@ -2,7 +2,6 @@
 .venv
 __pycache__
 *.pyc
-vw-data
 config
 tests
 scripts
