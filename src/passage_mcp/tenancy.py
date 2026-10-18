@@ -29,6 +29,30 @@ def safe_path(path: Path) -> Path:
     return path
 
 
+def _publish_key(key: Path) -> None:
+    # Capture key material without exposing it in subprocess errors or logs.
+    try:
+        generated = subprocess.run(['age-keygen'], check=True, capture_output=True).stdout
+    except subprocess.CalledProcessError:
+        raise InternalError('Tenant key generation failed') from None
+    fd, temporary = tempfile.mkstemp(prefix='.key-', dir=key.parent)
+    stage = Path(temporary)
+    try:
+        with os.fdopen(fd, 'wb') as output:
+            output.write(generated)
+            output.flush()
+            os.fsync(output.fileno())
+        # Unlike rename, link refuses to overwrite an existing identity.
+        os.link(stage, key)
+    finally:
+        stage.unlink()
+    dirfd = os.open(key.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(dirfd)
+    finally:
+        os.close(dirfd)
+
+
 class TenantManager:
     def __init__(self, config: Config, owner: AgeStore):
         if not isinstance(config.legacy_owner_sub, str) or not config.legacy_owner_sub:
@@ -63,14 +87,12 @@ class TenantManager:
                     raise InternalError('Tenant recipients missing; operator repair required')
             else:
                 if not key.exists():
-                    # age-keygen writes to stdout; capture, never log key material.
-                    generated = subprocess.run(['age-keygen'], check=True, capture_output=True).stdout
-                    keyfd = os.open(key, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-                    with os.fdopen(keyfd, 'wb') as output:
-                        output.write(generated)
-                        output.flush()
-                        os.fsync(output.fileno())
+                    _publish_key(key)
+            try:
                 pub = subprocess.run(['age-keygen', '-y', str(key)], check=True, capture_output=True).stdout
+            except subprocess.CalledProcessError:
+                raise InternalError('Invalid tenant key; operator repair required') from None
+            if not root.exists():
                 stage = Path(tempfile.mkdtemp(prefix='.provision-', dir=self.config.tenants_dir))
                 try:
                     recipients = stage / '.age-recipients'

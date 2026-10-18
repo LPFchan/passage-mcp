@@ -3,15 +3,18 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import subprocess
+import sys
+from contextlib import contextmanager
 from urllib.parse import quote
 
 import pytest
 
 from passage_mcp.config import Config
-from passage_mcp.identity import header_values, identity_from
+from passage_mcp.identity import decode_subject, header_values, identity_from
 from passage_mcp.store import AgeStore, ForbiddenError, InternalError, NotFoundError
-from passage_mcp.tenancy import TenantManager
+from passage_mcp.tenancy import TenantManager, _publish_key
 from passage_mcp import server
 
 
@@ -38,6 +41,17 @@ def test_identity_contract():
         assert identity_from(h) is None
     assert identity_from(headers(**{'x-lost-plus-encoding': 'Percent-UTF8'})) is None
     assert identity_from(header_values([(b'x-lost-plus-encoding', b'percent-utf8')] * 2)) is None
+
+
+@pytest.mark.parametrize('bad', [None, '', '%', '%E', '%zz', '%FF', '%C0%AF', '%ED%A0%80', 'é', '😀'])
+def test_subject_header_is_strict_ascii_percent_utf8(bad):
+    assert decode_subject(bad) is None
+
+
+def test_subject_header_decodes_once_without_normalization():
+    for sub in ('여우😀 +%2F/', '42', 'café', 'cafe\u0301', '%FF', 'a\r\nb'):
+        assert decode_subject(quote(sub, safe="~()*!.'-")) == sub
+    assert decode_subject('a+b') == 'a+b'
 
 
 @pytest.fixture
@@ -105,6 +119,116 @@ def test_provision_race(setup):
         assert stores[0]._identity.stat().st_mode & 0o777 == 0o600
         await stores[0].validate()
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('failure', ['partial-write', 'fsync', 'publish'])
+def test_failed_key_publication_can_retry(setup, monkeypatch, failure):
+    config, owner = setup
+    manager = TenantManager(config, owner)
+    name = hashlib.sha256(b'retry').hexdigest()
+    key = config.tenant_keys_dir / (name + '.key')
+    root = config.tenants_dir / name
+    owner_before = config.identity_file.read_bytes()
+    fdopen = os.fdopen
+
+    class PartialWriter:
+        def __init__(self, output): self.output = output
+        def write(self, data):
+            self.output.write(data[:16])
+            self.output.flush()
+            raise OSError('Injected disk full')
+
+    @contextmanager
+    def partial_fdopen(fd, mode):
+        with fdopen(fd, mode) as output:
+            yield PartialWriter(output) if mode == 'wb' else output
+
+    def fail(*args): raise OSError('Injected filesystem failure')
+
+    with monkeypatch.context() as patch:
+        if failure == 'partial-write': patch.setattr(os, 'fdopen', partial_fdopen)
+        elif failure == 'fsync': patch.setattr(os, 'fsync', fail)
+        else: patch.setattr(os, 'link', fail)
+        with pytest.raises(OSError): manager._provision(name)
+    assert not key.exists()
+    assert not root.exists()
+    assert not list(config.tenant_keys_dir.glob('.key-*'))
+
+    async def retry():
+        store = await manager.get_store('retry')
+        await store.add_folder('private')
+        await store.add_secret('private', 'saved', 'retried')
+        assert await store.get_secret('private', 'saved') == 'retried'
+        before = key.read_bytes()
+        again = await TenantManager(config, owner).get_store('retry')
+        assert again._identity.read_bytes() == before
+        assert await again.get_secret('private', 'saved') == 'retried'
+    asyncio.run(retry())
+    assert config.identity_file.read_bytes() == owner_before
+
+
+def test_atomic_publication_never_overwrites_existing_key(setup):
+    config, owner = setup
+    TenantManager(config, owner)
+    key = config.tenant_keys_dir / 'existing.key'
+    key.write_bytes(config.identity_file.read_bytes())
+    before = key.read_bytes()
+    with pytest.raises(FileExistsError): _publish_key(key)
+    assert key.read_bytes() == before
+    assert not list(config.tenant_keys_dir.glob('.key-*'))
+
+
+@pytest.mark.parametrize('completed', [False, True])
+def test_malformed_existing_key_requires_repair(setup, completed):
+    config, owner = setup
+    manager = TenantManager(config, owner)
+    name = hashlib.sha256(b'broken').hexdigest()
+    if completed: manager._provision(name)
+    root = config.tenants_dir / name
+    before = {p.name: p.read_bytes() for p in root.iterdir()} if completed else {}
+    key = config.tenant_keys_dir / (name + '.key')
+    key.write_bytes(b'partial-private-key')
+    with pytest.raises(InternalError, match='operator repair required') as error:
+        manager._provision(name)
+    assert 'partial-private-key' not in str(error.value)
+    assert key.read_bytes() == b'partial-private-key'
+    assert ({p.name: p.read_bytes() for p in root.iterdir()} if root.exists() else {}) == before
+    assert root.exists() == completed
+
+
+def test_provision_multiprocess_race(setup):
+    config, owner = setup
+    TenantManager(config, owner)
+    name = hashlib.sha256(b'multiprocess').hexdigest()
+    settings = json.dumps(dict(store_dir=str(config.store_dir), identity_file=str(config.identity_file),
+                               legacy_owner_sub='owner', tenants_dir=str(config.tenants_dir),
+                               tenant_keys_dir=str(config.tenant_keys_dir)))
+    script = '''
+import json, sys
+from passage_mcp.config import Config
+from passage_mcp.store import AgeStore
+from passage_mcp.tenancy import TenantManager
+config = Config.from_dict(json.loads(sys.argv[1]))
+TenantManager(config, AgeStore(config))._provision(sys.argv[2])
+'''
+    children = [subprocess.Popen([sys.executable, '-c', script, settings, name],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE) for _ in range(4)]
+    try:
+        for child in children:
+            _, stderr = child.communicate(timeout=30)
+            assert child.returncode == 0, stderr.decode()
+    finally:
+        for child in children:
+            if child.poll() is None:
+                child.kill()
+                child.communicate()
+    assert len(list(config.tenants_dir.iterdir())) == 1
+    assert len(list(config.tenant_keys_dir.glob('*.key'))) == 1
+    assert not list(config.tenant_keys_dir.glob('.key-*'))
+    async def validate():
+        store = await TenantManager(config, owner).get_store('multiprocess')
+        await store.validate()
+    asyncio.run(validate())
 
 
 def test_required_owner_and_separate_paths(setup):

@@ -1,5 +1,6 @@
 """Browser routes tested without trusting the deployment middleware."""
 from contextvars import ContextVar
+from urllib.parse import quote, unquote
 
 import pytest
 from unittest.mock import AsyncMock
@@ -27,7 +28,7 @@ def client(store):
         scope['state'] = dict(scope.get('state', {}))
         scope['state'].pop('passage_identity', None)
         headers = dict(scope.get('headers', []))
-        sub = headers.get(b'x-test-account', b'alice').decode()
+        sub = unquote(headers.get(b'x-test-account', b'alice').decode(), errors='strict')
         if sub != 'anonymous':
             scope['state']['passage_identity'] = {'sub':sub, 'email':sub+'@example.com', 'private':'omit'}
         token = current.set(bob_store if sub == 'bob' else store)
@@ -58,6 +59,25 @@ def test_session_and_guards(client):
     assert client.post('/api/folders/list',json={},headers={'X-Test-Account':'anonymous'}).status_code == 401
     assert client.get('/api/session',headers={'X-Test-Account':'anonymous'}).status_code == 401
     assert len(client.store_calls) == n
+
+
+@pytest.mark.parametrize('sub', ['여우😀 +%2F/', 'café', '42', '%FF'])
+def test_route_decodes_subject_without_middleware(client, sub):
+    encoded = quote(sub, safe="~()*!.'-")
+    response = client.post('/api/folders/list', json={}, headers={
+        'X-Test-Account': encoded, 'X-Passage-Subject': encoded,
+    })
+    assert response.status_code == 200
+    assert len(client.store_calls) == 1
+
+
+@pytest.mark.parametrize('bad', ['', '%', '%E', '%zz', '%FF', '%C0%AF', '%ED%A0%80', '%F0%9F'])
+def test_route_rejects_malformed_subject_without_store(client, bad):
+    response = client.post('/api/folders/list', json={}, headers={
+        'X-Test-Account': quote(bad or 'alice', safe=''), 'X-Passage-Subject': bad,
+    })
+    assert response.status_code == 409
+    assert not client.store_calls
 
 
 @pytest.mark.parametrize('data', [[], {'folder':1}, {'folder':'x','extra':'x'}, {'method':'empty_trash'}, None])

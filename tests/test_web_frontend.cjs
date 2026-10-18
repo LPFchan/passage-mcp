@@ -24,6 +24,8 @@ const sandbox={document:doc,window:{addEventListener(){}},navigator:{clipboard:{
   confirm:()=>true, console,
   fetch:async(url,options={})=>{
     if(url==='/api/session')return response({sub:account,email:account+'@example.com'});
+    // Use the real Fetch header conversion: raw emoji must throw ByteString errors.
+    new Headers(options.headers);
     requests.push({url,options});
     if(url.endsWith('/secrets/read') && delayRead) return new Promise(resolve=>{resolveRead=resolve;});
     return response({data:[]});
@@ -60,5 +62,14 @@ const flush=()=>new Promise(resolve=>setImmediate(resolve));
   assert.equal(doc.getElementById('save').hidden,true);
   assert.equal(doc.getElementById('cancel').textContent,'Close');
   assert.equal(vm.runInContext('submitAction',sandbox),null);
-  console.log('Frontend: session binding, stale response rejection, draft clearing, text rendering passed');
+  for (const sub of ['여우😀 +%2F/', 'café', '42', '%FF']) {
+    account=sub;
+    await vm.runInContext('refresh()',sandbox);
+    const header=requests.at(-1).options.headers['X-Passage-Subject'];
+    assert.equal(header,encodeURIComponent(sub));
+    assert.equal(decodeURIComponent(header),sub);
+    assert.match(header,/^[\x00-\x7f]+$/);
+    assert.equal(doc.getElementById('status').textContent,'Vault ready.');
+  }
+  console.log('Frontend: Unicode headers, session binding, stale responses, draft clearing, text rendering passed');
 })().catch(e=>{console.error(e);process.exitCode=1;});

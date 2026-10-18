@@ -37,7 +37,7 @@ async function api(path, data = {}, expected = epoch) {
   if (epoch !== expected || !subject) throw stale();
   const boundSubject = subject;
   const res = await fetch('/api/' + path, {method:'POST', cache:'no-store', credentials:'same-origin', redirect:'error',
-    headers:{'Content-Type':'application/json','X-Passage-Subject':boundSubject}, body:JSON.stringify(data)});
+    headers:{'Content-Type':'application/json','X-Passage-Subject':encodeURIComponent(boundSubject)}, body:JSON.stringify(data)});
   const result = await res.json();
   await session();
   if (epoch !== expected || subject !== boundSubject) throw stale();

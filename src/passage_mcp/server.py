@@ -15,7 +15,7 @@ import uvicorn
 
 from .config import Config
 from .store import AgeStore, InternalError
-from .identity import header_values, identity_from
+from .identity import decode_subject, header_values, identity_from
 from .tenancy import TenantManager
 
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(message)s"
@@ -71,12 +71,7 @@ class _IdentityMiddleware:
         api = path == "/api" or path.startswith("/api/")
         session = path == "/api/session" and scope["method"] == "GET"
         if api and not session:
-            # Browser sends the decoded immutable subject as an UTF-8 header.
-            # Header values in ASGI are Latin-1 byte-preserving strings.
-            try:
-                subject = headers.get("x-passage-subject", "").encode("latin1").decode("utf-8")
-            except UnicodeError:
-                subject = None
+            subject = decode_subject(headers.get("x-passage-subject"))
             if subject != identity["sub"]:
                 await JSONResponse({"error": "Session subject mismatch"}, status_code=403)(scope, receive, send)
                 return

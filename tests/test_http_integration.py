@@ -58,10 +58,34 @@ def combined(tmp_path, monkeypatch):
 
 def browser(client, sub, operation, **arguments):
     response = client.post('/api/' + operation, json=arguments, headers={
-        **identity(sub), 'X-Passage-Subject': sub, 'Origin': ORIGIN,
+        **identity(sub), 'X-Passage-Subject': quote(sub, safe="~()*!.'-"), 'Origin': ORIGIN,
     })
     assert response.status_code == 200, response.text
     return response.json()['data']
+
+
+@pytest.mark.parametrize('sub', ['여우😀 +%2F/', 'café', '42', '%FF'])
+def test_encoded_subject_passes_both_http_guards(combined, sub):
+    client, _ = combined
+    assert client.get('/api/session', headers=identity(sub)).json()['sub'] == sub
+    browser(client, sub, 'folders/create', folder='unicode')
+    browser(client, sub, 'secrets/create', folder='unicode', item_name='saved', value=sub)
+    assert browser(client, sub, 'secrets/read', folder='unicode', item_name='saved')['password'] == sub
+    assert mcp_tool(client, sub, 'get_secret', folder='unicode', item_name='saved') == sub
+
+
+@pytest.mark.parametrize('bad', ['', '%', '%E', '%zz', '%FF', '%C0%AF', '%ED%A0%80', '%F0%9F'])
+def test_malformed_subject_rejected_before_store_selection(combined, monkeypatch, bad):
+    client, path = combined
+    async def forbidden_selection(sub):
+        pytest.fail('Malformed subject selected a store')
+    monkeypatch.setattr(server._tenants, 'get_store', forbidden_selection)
+    response = client.post('/api/folders/list', json={}, headers={
+        **identity(bad or 'alice'), 'X-Passage-Subject': bad, 'Origin': ORIGIN,
+    })
+    assert response.status_code == 403
+    assert list((path / 'tenants').iterdir()) == []
+    assert list((path / 'keys').iterdir()) == []
 
 
 def mcp_tool(client, sub, name, **arguments):

@@ -6,6 +6,7 @@ from importlib.resources import files
 
 from starlette.responses import HTMLResponse, JSONResponse, Response
 
+from .identity import decode_subject, header_values
 from .store import (ConflictError, ForbiddenError, InternalError, InvalidNameError,
                     NotFoundError, StoreError)
 
@@ -88,7 +89,8 @@ def register_routes(mcp_server, get_store):
             identity = _identity(request)
             if identity is None:
                 return _json({"error": "Sign in required"}, 401)
-            if request.headers.get("X-Passage-Subject") != identity["sub"]:
+            headers = header_values(request.scope.get("headers", []))
+            if decode_subject(headers.get("x-passage-subject")) != identity["sub"]:
                 return _json({"error": "Account changed. Refresh the vault."}, 409)
             if request.headers.get("origin") != ORIGIN:
                 return _json({"error": "Origin not allowed"}, 403)

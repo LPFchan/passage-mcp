@@ -21,16 +21,29 @@ def header_values(raw: list[tuple[bytes, bytes]]) -> dict[str, str]:
     return values
 
 
+def decode_percent_utf8(value: str | None) -> str | None:
+    if not value or re.search(r'%(?![0-9a-fA-F]{2})', value):
+        return None
+    try:
+        return unquote(value, encoding='utf-8', errors='strict')
+    except UnicodeError:
+        return None
+
+
+def decode_subject(value: str | None) -> str | None:
+    """X-Passage-Subject uses encodeURIComponent's ASCII wire representation."""
+    if value is None or not value.isascii():
+        return None
+    return decode_percent_utf8(value)
+
+
 def identity_from(headers: dict[str, str]) -> dict[str, str] | None:
     if headers.get('x-lost-plus-encoding') != 'percent-utf8':
         return None
     result = {}
     for field in ('sub', 'email', 'name', 'role'):
-        value = headers.get('x-lost-plus-' + field)
-        if not value or re.search(r'%(?![0-9a-fA-F]{2})', value):
+        value = decode_percent_utf8(headers.get('x-lost-plus-' + field))
+        if value is None:
             return None
-        try:
-            result[field] = unquote(value, encoding='utf-8', errors='strict')
-        except UnicodeError:
-            return None
+        result[field] = value
     return result
