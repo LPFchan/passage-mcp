@@ -14,9 +14,14 @@ services:
       - /var/lib/passage-mcp/store:/store
       # server's age identity; root:1001 0640 on the host, never inside the store
       - /etc/passage-mcp/age-identity:/run/secrets/age-identity:ro
+      - /var/lib/passage-mcp/tenants:/tenants
+      - /etc/passage-mcp/tenant-keys:/tenant-keys
       - ./config/config.json:/config/config.json:ro
     environment:
       HOST: 0.0.0.0
       PORT: 8000
       SECRETS_STORE_DIR: /store
       AGE_IDENTITY_FILE: /run/secrets/age-identity
+      LEGACY_OWNER_SUB: ${LEGACY_OWNER_SUB:?Set the immutable existing owner subject}
+      TENANTS_DIR: /tenants
+      TENANT_KEYS_DIR: /tenant-keys

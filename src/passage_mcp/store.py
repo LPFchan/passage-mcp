@@ -103,22 +103,29 @@ def _parse_record(raw: bytes) -> dict:
 
 class AgeStore:
     def __init__(self, config: Config):
-        self._root: Path = config.store_dir
-        self._identity: Path = config.identity_file
+        self._root: Path = config.store_dir.absolute()
+        self._identity: Path = config.identity_file.absolute()
         self._recipients: Path = self._root / RECIPIENTS_FILE
-        self._allowed: list[str] | None = config.allowed_folders
+        self._allowed: list[str] | None = list(config.allowed_folders) if config.allowed_folders is not None else None
         self._lock = asyncio.Lock()
 
     # -- paths ---------------------------------------------------------------
 
+    @staticmethod
+    def _safe(path: Path) -> Path:
+        for component in (path, *path.parents):
+            if component.is_symlink():
+                raise ForbiddenError("Symlinks are not supported in vault paths")
+        return path
+
     def _folder_dir(self, folder: str) -> Path:
-        return self._root / _check_name(folder, "folder")
+        return self._safe(self._root / _check_name(folder, "folder"))
 
     def _item_path(self, folder: str, name: str) -> Path:
-        return self._folder_dir(folder) / (_check_name(name, "item_name") + SUFFIX)
+        return self._safe(self._folder_dir(folder) / (_check_name(name, "item_name") + SUFFIX))
 
     def _trash_path(self, folder: str, name: str) -> Path:
-        return (
+        return self._safe(
             self._root
             / TRASH_DIR
             / _check_name(folder, "folder")
@@ -166,10 +173,14 @@ class AgeStore:
         return out
 
     async def _decrypt(self, path: Path) -> dict:
+        self._safe(path)
+        self._safe(self._identity)
         raw = await self._run("age", "-d", "-i", str(self._identity), str(path))
         return _parse_record(raw)
 
     async def _encrypt(self, path: Path, record: dict) -> None:
+        self._safe(path)
+        self._safe(self._recipients)
         payload = json.dumps(record, ensure_ascii=False).encode("utf-8")
         tmp = path.with_name(path.name + ".tmp")
         tmp.unlink(missing_ok=True)
@@ -182,20 +193,21 @@ class AgeStore:
     # -- listing helpers -----------------------------------------------------
 
     def _iter_folders(self) -> list[str]:
+        self._safe(self._root)
         if not self._root.is_dir():
             return []
         return sorted(
-            p.name for p in self._root.iterdir() if p.is_dir() and not p.name.startswith(".")
+            p.name for p in self._root.iterdir() if self._safe(p).is_dir() and not p.name.startswith(".")
         )
 
-    @staticmethod
-    def _iter_items(folder_dir: Path) -> list[str]:
+    def _iter_items(self, folder_dir: Path) -> list[str]:
+        self._safe(folder_dir)
         if not folder_dir.is_dir():
             return []
         return sorted(
             p.name[: -len(SUFFIX)]
             for p in folder_dir.iterdir()
-            if p.is_file() and p.name.endswith(SUFFIX) and not p.name.startswith(".")
+            if self._safe(p).is_file() and p.name.endswith(SUFFIX) and not p.name.startswith(".")
         )
 
     # -- reads ---------------------------------------------------------------
@@ -247,15 +259,15 @@ class AgeStore:
         return results
 
     async def list_trash(self) -> list[dict]:
-        trash = self._root / TRASH_DIR
+        trash = self._safe(self._root / TRASH_DIR)
         if not trash.is_dir():
             return []
         result: list[dict] = []
         for folder_dir in trash.iterdir():
-            if not folder_dir.is_dir():
+            if not self._safe(folder_dir).is_dir():
                 continue
             for p in folder_dir.iterdir():
-                if not (p.is_file() and p.name.endswith(SUFFIX)):
+                if not (self._safe(p).is_file() and p.name.endswith(SUFFIX)):
                     continue
                 try:
                     mtime = p.stat().st_mtime
@@ -323,7 +335,7 @@ class AgeStore:
 
     async def empty_trash(self) -> None:
         async with self._lock:
-            trash = self._root / TRASH_DIR
+            trash = self._safe(self._root / TRASH_DIR)
             if trash.is_dir():
                 shutil.rmtree(trash)
 
@@ -351,8 +363,8 @@ class AgeStore:
             nd = self._folder_dir(new_name)
             if nd.exists():
                 raise ConflictError(f"Folder already exists: {new_name}")
-            old_trash = self._root / TRASH_DIR / folder
-            new_trash = self._root / TRASH_DIR / new_name
+            old_trash = self._safe(self._root / TRASH_DIR / folder)
+            new_trash = self._safe(self._root / TRASH_DIR / new_name)
             if old_trash.is_dir() and new_trash.exists():
                 raise ConflictError(f"Trash already has a folder named {new_name}")
             d.rename(nd)
@@ -381,6 +393,11 @@ class AgeStore:
     # -- startup -------------------------------------------------------------
 
     async def validate(self) -> None:
+        self._safe(self._root)
+        self._safe(self._identity)
+        self._safe(self._recipients)
+        for path in self._root.rglob("*"):
+            self._safe(path)
         if not self._root.is_dir():
             raise InternalError(f"Store directory missing: {self._root}")
         if not self._identity.is_file():
