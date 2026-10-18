@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 from contextlib import contextmanager
+from pathlib import Path
 from urllib.parse import quote
 
 import pytest
@@ -194,6 +195,90 @@ def test_malformed_existing_key_requires_repair(setup, completed):
     assert key.read_bytes() == b'partial-private-key'
     assert ({p.name: p.read_bytes() for p in root.iterdir()} if root.exists() else {}) == before
     assert root.exists() == completed
+
+
+def test_wrong_valid_key_refused_and_correct_key_restored(setup):
+    config, owner = setup
+    async def scenario():
+        manager = TenantManager(config, owner)
+        store = await manager.get_store('restored')
+        await store.add_folder('private')
+        await store.add_secret('private', 'saved', 'previous-value')
+        key = store._identity
+        correct_key = key.read_bytes()
+        wrong_key = config.identity_file.read_bytes()
+        key.write_bytes(wrong_key)
+        assert subprocess.run(['age-keygen', '-y', str(key)], check=True, capture_output=True).stdout
+        before = {p.relative_to(store._root): p.read_bytes()
+                  for p in store._root.rglob('*') if p.is_file()}
+        for _ in range(2):
+            with pytest.raises(InternalError, match='operator repair required') as error:
+                await TenantManager(config, owner).get_store('restored')
+            assert 'AGE-SECRET-KEY' not in str(error.value)
+            assert key.read_bytes() == wrong_key
+            assert {p.relative_to(store._root): p.read_bytes()
+                    for p in store._root.rglob('*') if p.is_file()} == before
+        key.write_bytes(correct_key)
+        restored = await manager.get_store('restored')
+        assert await restored.get_secret('private', 'saved') == 'previous-value'
+        await restored.add_secret('private', 'new', 'new-value')
+        assert await restored.get_secret('private', 'new') == 'new-value'
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('recovery', [False, True])
+def test_existing_recipients_allow_comments_whitespace_and_recovery(setup, recovery):
+    config, owner = setup
+    async def scenario():
+        manager = TenantManager(config, owner)
+        store = await manager.get_store('recipients')
+        recipients = store._root / '.age-recipients'
+        pub = recipients.read_text().strip()
+        recovery_pub = subprocess.run(['age-keygen', '-y', str(config.identity_file)],
+                                      check=True, capture_output=True).stdout.decode().strip()
+        contents = f'# private vault\n\n{recovery_pub if recovery else ""}\n{pub}\n'
+        recipients.write_text(contents)
+        key_before = store._identity.read_bytes()
+        reopened = await manager.get_store('recipients')
+        await reopened.add_folder('private')
+        await reopened.add_secret('private', 'saved', 'readable')
+        assert await reopened.get_secret('private', 'saved') == 'readable'
+        assert recipients.read_text() == contents
+        contents = f'  # private vault\n\n{recovery_pub if recovery else ""}\n  {pub}  \n'
+        recipients.write_text(contents)
+        reopened = await manager.get_store('recipients')
+        assert await reopened.get_secret('private', 'saved') == 'readable'
+        assert recipients.read_text() == contents
+        assert reopened._identity.read_bytes() == key_before
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('failure', ['missing', 'unreadable', 'invalid-utf8', 'empty', 'invalid', 'comment', 'substring'])
+def test_existing_invalid_recipients_require_repair(setup, monkeypatch, failure):
+    config, owner = setup
+    manager = TenantManager(config, owner)
+    name = hashlib.sha256(b'broken-recipients').hexdigest()
+    tenant = manager._provision(name)
+    recipients = tenant.store_dir / '.age-recipients'
+    pub = recipients.read_text().strip()
+    if failure == 'missing': recipients.unlink()
+    elif failure == 'invalid-utf8': recipients.write_bytes(b'\xff')
+    elif failure == 'empty': recipients.write_text(' \n')
+    elif failure == 'invalid': recipients.write_text('invalid-recipient')
+    elif failure == 'comment': recipients.write_text(f'  # {pub}\n')
+    elif failure == 'substring': recipients.write_text(f'{pub}extra\n')
+    before = recipients.read_bytes() if recipients.exists() else None
+    key_before = tenant.identity_file.read_bytes()
+    read_text = Path.read_text
+    def unreadable(path, *args, **kwargs):
+        if path == recipients: raise PermissionError('sensitive filesystem details')
+        return read_text(path, *args, **kwargs)
+    if failure == 'unreadable': monkeypatch.setattr(Path, 'read_text', unreadable)
+    with pytest.raises(InternalError, match='operator repair required') as error:
+        manager._provision(name)
+    assert 'sensitive filesystem details' not in str(error.value)
+    assert tenant.identity_file.read_bytes() == key_before
+    assert (recipients.read_bytes() if recipients.exists() else None) == before
 
 
 def test_provision_multiprocess_race(setup):

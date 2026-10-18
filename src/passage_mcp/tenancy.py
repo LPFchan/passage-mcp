@@ -92,7 +92,18 @@ class TenantManager:
                 pub = subprocess.run(['age-keygen', '-y', str(key)], check=True, capture_output=True).stdout
             except subprocess.CalledProcessError:
                 raise InternalError('Invalid tenant key; operator repair required') from None
-            if not root.exists():
+            if root.exists():
+                try:
+                    recipients = [
+                        line.strip()
+                        for line in (root / '.age-recipients').read_text().splitlines()
+                        if line.strip() and not line.lstrip().startswith('#')
+                    ]
+                except (OSError, UnicodeError):
+                    raise InternalError('Invalid tenant recipients; operator repair required') from None
+                if not any(value in recipients for value in pub.decode().split()):
+                    raise InternalError('Tenant key does not match recipients; operator repair required')
+            else:
                 stage = Path(tempfile.mkdtemp(prefix='.provision-', dir=self.config.tenants_dir))
                 try:
                     recipients = stage / '.age-recipients'
