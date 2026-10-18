@@ -1,0 +1,151 @@
+/* Copy this accessible starter into a service. Surfaces and text stay neutral
+   grey; set --accent-hue to a random hue (0-359) for each new service. Every
+   hue passes WCAG AA at these lightness values. */
+@import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css");
+
+:root {
+  color-scheme: light dark;
+  --accent-hue: 244;
+  --bg: #f7f7f7;
+  --surface: #fff;
+  --surface-2: #efefef;
+  --hair: rgb(0 0 0 / 8%);
+  --line: #8a8a8a;
+  --hover: rgb(0 0 0 / 5%);
+  --text: #1a1a1a;
+  --text-muted: #555;
+  --text-meta: #6b6b6b;
+  --accent: oklch(50% 0.15 var(--accent-hue));
+  --accent-soft: oklch(50% 0.15 var(--accent-hue) / 12%);
+  --accent-solid: var(--accent);
+  --on-accent-solid: #fff;
+  --ok: #247737;
+  --warn: #8a5a12;
+  --danger: #b4232a;
+  --danger-soft: rgb(180 35 42 / 8%);
+  --sans: "Pretendard Variable", Pretendard, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", Roboto, "Helvetica Neue", "Apple SD Gothic Neo", sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono",
+    monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161616;
+    --surface: #1c1c1c;
+    --surface-2: #232323;
+    --hair: rgb(255 255 255 / 8%);
+    --line: #6e6e6e;
+    --hover: rgb(255 255 255 / 5%);
+    --text: #e8e8e8;
+    --text-muted: #b0b0b0;
+    --text-meta: #999;
+    --accent: oklch(80% 0.12 var(--accent-hue));
+    --accent-soft: oklch(80% 0.12 var(--accent-hue) / 16%);
+    --on-accent-solid: #161616;
+    --ok: #58d080;
+    --warn: #efbd5b;
+    --danger: #ff8a8f;
+    --danger-soft: rgb(255 138 143 / 10%);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  color: var(--text);
+  background: var(--bg);
+  font: 14px/1.5 var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.btn {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.btn.primary {
+  border-color: var(--accent-solid);
+  color: var(--on-accent-solid);
+  background: var(--accent-solid);
+}
+
+.btn.quiet {
+  border-color: transparent;
+  color: var(--text-muted);
+}
+
+.btn.quiet:hover {
+  color: var(--text);
+  background: var(--hover);
+}
+
+.btn.danger {
+  color: var(--danger);
+}
+
+.pill {
+  display: inline-flex;
+  height: 22px;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0 8px;
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: var(--surface-2);
+  font-size: 12px;
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-meta);
+}
+
+.section-label {
+  margin: 20px 0 6px;
+  color: var(--text-meta);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px 16px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--hair);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
