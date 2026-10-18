@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Passage · Your private vault</title><link rel="stylesheet" href="/assets/tokens.css"><link rel="stylesheet" href="/assets/vault.css"><script src="/assets/vault.js" defer></script></head>
+<body>
+<header><a class="brand" href="/">Passage</a><span id="identity">Checking account…</span><a href="/_auth/logout">Sign out</a></header>
+<main>
+<section class="intro"><p class="section-label">Your private vault</p><h1>A place for your secrets.</h1><p>Only your account can access this vault.</p></section>
+<p id="status" role="status" aria-live="polite">Loading…</p>
+<div class="toolbar"><button class="btn primary" id="new-folder" disabled>New folder</button><button class="btn" id="trash" disabled>Trash</button><button class="btn" id="refresh">Refresh</button><form id="search-form"><label for="search">Find by name</label><input id="search" type="search" maxlength="200" autocomplete="off"><button class="btn">Search</button></form></div>
+<div id="vault"></div>
+<section class="connect"><h2>Connect your assistant</h2><p>Add a remote MCP server in your assistant’s connector settings, then sign in with the same Common Auth account.</p><label for="endpoint">MCP server URL</label><div class="toolbar"><input id="endpoint" readonly value="https://passage.lost.plus/mcp"><button id="copy-endpoint" class="btn">Copy URL</button></div><p class="muted">Your assistant gets access to this account’s vault. Review its requests before sharing secret values with other tools.</p></section>
+</main>
+<dialog id="editor" aria-labelledby="dialog-title"><form id="editor-form"><h2 id="dialog-title"></h2><p id="dialog-note"></p><div id="fields"></div><p id="dialog-error" role="alert"></p><div class="toolbar"><button class="btn primary" type="submit" id="save">Save</button><button class="btn" type="button" id="cancel">Cancel</button></div></form></dialog>
+</body></html>

@@ -20,6 +20,9 @@ class Config:
     store_dir: Path
     identity_file: Path
     allowed_folders: list[str] | None = None
+    legacy_owner_sub: str | None = None
+    tenants_dir: Path = Path("/var/lib/passage-mcp/tenants")
+    tenant_keys_dir: Path = Path("/var/lib/passage-mcp/tenant-keys")
 
     @classmethod
     def from_path(cls, path: str) -> Config:
@@ -50,4 +53,7 @@ class Config:
             store_dir=_expand(store_dir),
             identity_file=_expand(identity_file),
             allowed_folders=allowed,
+            legacy_owner_sub=os.environ.get("LEGACY_OWNER_SUB") or data.get("legacy_owner_sub"),
+            tenants_dir=_expand(os.environ.get("TENANTS_DIR") or data.get("tenants_dir") or "/var/lib/passage-mcp/tenants"),
+            tenant_keys_dir=_expand(os.environ.get("TENANT_KEYS_DIR") or data.get("tenant_keys_dir") or "/var/lib/passage-mcp/tenant-keys"),
         )

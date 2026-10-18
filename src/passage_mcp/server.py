@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import fnmatch
 import logging
 import os
 import sys
 from collections.abc import AsyncIterator
+from contextvars import ContextVar
 
 from mcp.server import CacheHint, MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
@@ -15,10 +15,15 @@ import uvicorn
 
 from .config import Config
 from .store import AgeStore, InternalError
+from .identity import decode_subject, header_values, identity_from
+from .tenancy import TenantManager
 
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(message)s"
 
 _client: AgeStore | None = None
+_tenants: TenantManager | None = None
+_http_mode = False
+_request_client: ContextVar[AgeStore | None] = ContextVar("passage_store", default=None)
 
 
 def _setup_logging() -> None:
@@ -32,74 +37,66 @@ def _setup_logging() -> None:
 
 
 def _require_client() -> AgeStore:
+    if _http_mode:
+        client = _request_client.get()
+        if client is None:
+            raise InternalError("No request vault selected")
+        return client
     if _client is None:
         raise InternalError("Server not initialized")
     return _client
 
 
-# -- CORS middleware -------------------------------------------------------
+# -- request identity ------------------------------------------------------
 
 
-class _CORSMiddleware:
+class _IdentityMiddleware:
     def __init__(self, app):
         self.app = app
-        raw = os.environ.get("ALLOWED_ORIGINS", "https://*.lost.plus")
-        self._allowed = [o.strip() for o in raw.split(",") if o.strip()]
-
-    def _echo_origin(self, origin: str | None) -> str | None:
-        if not origin:
-            return None
-        for pattern in self._allowed:
-            if fnmatch.fnmatch(origin, pattern):
-                return origin
-        return None
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
-
-        headers = dict(scope.get("headers", []))
-        origin_raw = headers.get(b"origin")
-        origin = origin_raw.decode() if origin_raw else None
-        matched = self._echo_origin(origin)
-
-        if scope["method"] == "OPTIONS":
-            resp_headers = [
-                (b"access-control-allow-methods", b"GET, POST, DELETE, OPTIONS"),
-                (b"access-control-allow-headers", b"authorization, content-type, accept, mcp-session-id, mcp-protocol-version, mcp-method, mcp-name, mcp-param-*, last-event-id, x-api-key"),
-                (b"access-control-expose-headers", b"mcp-session-id, mcp-protocol-version, content-type"),
-            ]
-            if matched:
-                resp_headers.insert(0, (b"access-control-allow-origin", matched.encode()))
-            elif origin:
-                resp_headers.insert(0, (b"access-control-allow-origin", origin.encode()))
-            await send({"type": "http.response.start", "status": 204, "headers": resp_headers})
-            await send({"type": "http.response.body", "body": b""})
+        # This listener is reachable only through the gateway's loopback port.
+        if scope["path"] == "/healthz" and scope["method"] == "GET":
+            await self.app(scope, receive, send)
             return
-
-        async def send_with_cors(message):
-            if message["type"] == "http.response.start":
-                hlist = list(message.get("headers", []))
-                if matched:
-                    hlist.append((b"access-control-allow-origin", matched.encode()))
-                elif origin:
-                    hlist.append((b"access-control-allow-origin", origin.encode()))
-                hlist.append((b"access-control-expose-headers", b"mcp-session-id, mcp-protocol-version, content-type"))
-                hlist.append((b"vary", b"Origin"))
-                message["headers"] = hlist
-            await send(message)
-
-        await self.app(scope, receive, send_with_cors)
+        headers = header_values(scope.get("headers", []))
+        identity = identity_from(headers)
+        if identity is None:
+            await JSONResponse({"error": "Gateway identity missing or malformed"}, status_code=401)(scope, receive, send)
+            return
+        path = scope["path"]
+        api = path == "/api" or path.startswith("/api/")
+        session = path == "/api/session" and scope["method"] == "GET"
+        if api and not session:
+            subject = decode_subject(headers.get("x-passage-subject"))
+            if subject != identity["sub"]:
+                await JSONResponse({"error": "Session subject mismatch"}, status_code=403)(scope, receive, send)
+                return
+            if scope["method"] not in {"GET", "HEAD", "OPTIONS"} and headers.get("origin") != "https://passage.lost.plus":
+                await JSONResponse({"error": "Invalid request origin"}, status_code=403)(scope, receive, send)
+                return
+        scope.setdefault("state", {})["passage_identity"] = identity
+        token = _request_client.set(None)
+        try:
+            if not session:
+                if _tenants is None:
+                    raise InternalError("Tenant manager not initialized")
+                _request_client.set(await _tenants.get_store(identity["sub"]))
+            await self.app(scope, receive, send)
+        finally:
+            _request_client.reset(token)
 
 
 # -- lifespan --------------------------------------------------------------
 
 
-def _build_lifespan(config_path: str):
+def _build_lifespan(config_path: str, *, http: bool = False):
     @contextlib.asynccontextmanager
     async def lifespan(_server: MCPServer) -> AsyncIterator[None]:
-        global _client
+        global _client, _tenants, _http_mode
         logger = logging.getLogger(__name__)
         logger.info("Loading config from %s", config_path)
 
@@ -111,16 +108,20 @@ def _build_lifespan(config_path: str):
             config.allowed_folders if config.allowed_folders is not None else "all",
         )
 
+        _http_mode = http
         _client = AgeStore(config)
-        await _client.validate()
-        logger.info("Startup validation passed")
-
         try:
+            if http:
+                _tenants = TenantManager(config, _client)
+            await _client.validate()
+            logger.info("Startup validation passed")
             yield
         finally:
             if _client is not None:
                 await _client.close()
                 _client = None
+            _tenants = None
+            _http_mode = False
 
     return lifespan
 
@@ -230,10 +231,9 @@ def _register_tools(mcp_server: MCPServer) -> None:
 
 
 def _register_routes(mcp_server: MCPServer) -> None:
-    @mcp_server.custom_route("/", methods=["GET"], include_in_schema=False)
-    async def root_route(request):
-        del request
-        return JSONResponse({"name": "passage-mcp", "mcp_path": "/mcp", "healthz": "/healthz"})
+    from .web import register_routes
+
+    register_routes(mcp_server, _require_client)
 
     @mcp_server.custom_route("/healthz", methods=["GET"], include_in_schema=False)
     async def health_route(request):
@@ -251,7 +251,7 @@ def _build_transport_security() -> TransportSecuritySettings:
 # -- main -----------------------------------------------------------------
 
 
-def _build_app(mcp_server: MCPServer) -> object:
+def _build_app(mcp_server: MCPServer, config_path: str) -> object:
     inner = mcp_server.streamable_http_app(
         streamable_http_path="/mcp",
         json_response=True,
@@ -259,7 +259,16 @@ def _build_app(mcp_server: MCPServer) -> object:
         host=os.environ.get("HOST", "127.0.0.1"),
         transport_security=_build_transport_security(),
     )
-    return _CORSMiddleware(inner)
+    sdk_lifespan = inner.router.lifespan_context
+
+    @contextlib.asynccontextmanager
+    async def lifespan(app):
+        async with _build_lifespan(config_path, http=True)(mcp_server):
+            async with sdk_lifespan(app):
+                yield
+
+    inner.router.lifespan_context = lifespan
+    return _IdentityMiddleware(inner)
 
 
 def main() -> None:
@@ -272,7 +281,7 @@ def main() -> None:
 
     mcp = MCPServer(
         "passage",
-        lifespan=_build_lifespan(args.config),
+        lifespan=_build_lifespan(args.config) if args.stdio else None,
         version="0.2.0",
         cache_hints={
             "server/discover": CacheHint(ttl_ms=300_000, scope="public"),
@@ -281,7 +290,8 @@ def main() -> None:
     )
 
     _register_tools(mcp)
-    _register_routes(mcp)
+    if not args.stdio:
+        _register_routes(mcp)
 
     if args.stdio:
         try:
@@ -293,7 +303,7 @@ def main() -> None:
             sys.exit(1)
         return
 
-    app = _build_app(mcp)
+    app = _build_app(mcp, args.config)
 
     uvicorn.run(
         app,
