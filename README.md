@@ -2,8 +2,10 @@
 
 MCP server that lets AI agents read and manage secrets kept in an
 [age](https://age-encryption.org)-encrypted [passage](https://github.com/FiloSottile/passage)
-store. Secrets are ciphertext on disk. The server holds no key material of its
-own: it shells out to `age` with the path of an identity file.
+store. Each Common Auth account has a private vault, selected by its immutable
+account subject. Version 1 has no sharing. Secrets are age ciphertext on disk;
+the server holds the decryption identities separately and decrypts on request.
+This is server-side key custody, not end-to-end encryption.
 
 The name is historical. Until September 2026 this served secrets out of a
 Vaultwarden instance, where they sat in plaintext. See DESIGN below.
@@ -12,21 +14,26 @@ The server uses the official MCP Python SDK v2 and supports the
 `2026-07-28` stateless protocol via `server/discover`, with a stateless legacy
 fallback for clients that still use `initialize`.
 
-The production HTTP endpoint is `https://passage.lost.plus/mcp`. The shared
-Common Auth gateway protects it with the `passage` scope. Send a
-Common Auth token as `Authorization: Bearer <token>` or `X-API-Key: <token>`.
-The HTTP backend does not authenticate requests itself and must remain bound to
-localhost behind the gateway. Stdio clients are unaffected.
+The browser app is `https://passage.lost.plus/`. Sign in through Common Auth;
+browser API requests use its session cookie on the same origin. The MCP endpoint
+is `https://passage.lost.plus/mcp`, protected by the `passage` scope. MCP clients
+use Common Auth OAuth or a Common Auth token as `Authorization: Bearer <token>`
+or `X-API-Key: <token>`. Service restrictions set by an administrator still apply.
+The gateway injects the account identity; the backend must remain on a private
+loopback port behind it. Local stdio uses the configured local store.
+
+General availability requires the coordinated rollout in [DEPLOYMENT.md](DEPLOYMENT.md).
+Do not open hub admission until the isolated backend is deployed and verified.
 
 ## Architecture
 
 ```
 AI Agent harness ---- HTTPS/Common Auth ---- MCP Server ---- age ---- <store>/<folder>/<name>.age
                                                               |
-                                                     identity file (read-only)
+                                                     separate server identities
 ```
 
-Store layout is passage's, so `passage ls`, `passage show folder/name`, and
+Each vault uses passage's store layout, so `passage ls`, `passage show folder/name`, and
 `passage insert` work on the same directory from a shell.
 
 ```
@@ -41,7 +48,7 @@ files are rejected at startup.
 
 ## Keys
 
-Two age identities, both listed in `.age-recipients`:
+The existing owner vault has two age recipients listed in `.age-recipients`:
 
 - **Server key.** Its identity file lives outside the store, readable by the
   container user. The server decrypts with it at every read.
@@ -53,19 +60,21 @@ Two age identities, both listed in `.age-recipients`:
 Startup fails if the server identity's public key is missing from
 `.age-recipients`, since new writes would then be unreadable.
 
+Other accounts receive separate stores and server identities on their first
+vault operation. New vaults currently encrypt only to their server key; they
+have no additional recovery recipient. Back up these keys securely and separately
+from ciphertext. Losing a server key and its backups makes that vault unrecoverable.
+
 ## Deployment (oci-ubuntu)
 
-| Path | Purpose | Owner / mode |
-| --- | --- | --- |
-| `/var/lib/passage-mcp/store` | the store (ciphertext only) | `1001:1001` `750` |
-| `/etc/passage-mcp/age-identity` | server identity | `root:1001` `640` |
-| `./config/config.json` | `allowed_folders` | repo, gitignored |
+See [DEPLOYMENT.md](DEPLOYMENT.md) for owner mapping, separate persistent
+ciphertext/key directories, rollout gates, verification, and rollback.
+The existing owner store stays at `/var/lib/passage-mcp/store` and its server
+identity at `/etc/passage-mcp/age-identity`.
 
-```
-docker compose up -d --build
-```
-
-Back up the store directory freely. Never back up the identity file next to it.
+Back up all vault ciphertext, including `.age-recipients` and `.trash`, and keep
+matching key backups separately with restricted access. Test restoration using
+an isolated copy. Ciphertext backups alone cannot restore a vault after key loss.
 
 ## Stdio / local use
 
@@ -84,7 +93,7 @@ Defaults follow passage: store at `~/.passage/store`, identity at
 }
 ```
 
-`age` must be on `PATH`.
+`age` must be on `PATH`; HTTP tenant provisioning also requires `age-keygen`.
 
 ## Tools
 
