@@ -67,7 +67,8 @@ async def _payload(request):
 
 def register_routes(mcp_server, get_store):
     """Register once; get_store() must resolve the current authenticated request."""
-    decrypt_slots = asyncio.Semaphore(4)
+    decrypt_limit = 4
+    decrypt_slots = asyncio.Semaphore(decrypt_limit)
 
     async def masked_item(store, folder, item):
         async with decrypt_slots:
@@ -113,9 +114,18 @@ def register_routes(mcp_server, get_store):
                 result = await getattr(store, method)(**data)
                 if method == "list_secrets":
                     for group in result:
-                        masked = await asyncio.gather(*(masked_item(store, group["folder"], item)
-                                                        for item in group["items"]))
-                        group["items"] = [item for item in masked if item is not None]
+                        items, group["items"] = group["items"], []
+                        for offset in range(0, len(items), decrypt_limit):
+                            # Queue at most one batch, letting other requests
+                            # acquire slots before this listing's next batch.
+                            # Drain the batch on errors; no orphaned reads.
+                            masked = await asyncio.gather(*(masked_item(store, group["folder"], item)
+                                                            for item in items[offset:offset + decrypt_limit]),
+                                                          return_exceptions=True)
+                            for item in masked:
+                                if isinstance(item, BaseException):
+                                    raise item
+                            group["items"].extend(item for item in masked if item is not None)
                 return _json({"data": result})
             except OverflowError:
                 return _json({"error": "Request too large"}, 413)

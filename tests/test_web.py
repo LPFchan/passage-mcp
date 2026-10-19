@@ -228,3 +228,66 @@ def test_listing_decrypts_with_bounded_parallelism(client, monkeypatch):
     assert peak == 4
     assert active == 0
     assert 'secret-' not in response.text
+
+
+def test_failed_listing_drains_current_batch_and_stops(client, monkeypatch):
+    import asyncio
+    started, finished = [], []
+    active = 0
+    async def listing(folder):
+        return [{'folder': folder, 'items': [{'name': str(i)} for i in range(12)]}]
+    async def reading(folder, item_name):
+        nonlocal active
+        started.append(item_name)
+        active += 1
+        try:
+            if item_name == '0':
+                raise InternalError('broken ciphertext')
+            await asyncio.sleep(0.01)
+            return {'password': 'secret-' + item_name}
+        finally:
+            active -= 1
+            finished.append(item_name)
+    monkeypatch.setattr(client.store, 'list_secrets', listing)
+    monkeypatch.setattr(client.store, 'get_login', reading)
+    response = post(client, 'secrets/list', folder='infra')
+    assert response.status_code == 500
+    assert set(started) == {'0', '1', '2', '3'}
+    assert set(finished) == set(started)
+    assert active == 0
+
+
+def test_large_listing_does_not_queue_ahead_of_other_requests(client, monkeypatch):
+    import asyncio
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    large_started, small_listed = threading.Event(), threading.Event()
+    release = asyncio.Event()
+    reads = []
+    async def listing(folder):
+        if folder == 'small':
+            small_listed.set()
+        count = 12 if folder == 'large' else 1
+        return [{'folder': folder, 'items': [{'name': str(i)} for i in range(count)]}]
+    async def reading(folder, item_name):
+        reads.append((folder, item_name))
+        if folder == 'large' and int(item_name) < 4:
+            if len(reads) == 4:
+                large_started.set()
+            await release.wait()
+        return {'password': 'secret-' + item_name}
+    monkeypatch.setattr(client.store, 'list_secrets', listing)
+    monkeypatch.setattr(client.store, 'get_login', reading)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        large = pool.submit(post, client, 'secrets/list', folder='large')
+        try:
+            assert large_started.wait(2)
+            small = pool.submit(post, client, 'secrets/list', folder='small')
+            assert small_listed.wait(2)
+            client.portal.call(asyncio.sleep, 0)
+            client.portal.call(asyncio.sleep, 0)
+        finally:
+            client.portal.call(release.set)
+        assert small.result(timeout=2).status_code == 200
+        assert large.result(timeout=2).status_code == 200
+    assert reads.index(('small', '0')) < reads.index(('large', '4'))
