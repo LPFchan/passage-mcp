@@ -124,12 +124,11 @@ def test_session_assets_and_rejections_do_not_allocate(combined):
                            headers=valid | change).status_code == 403
     assert list((path / 'tenants').iterdir()) == []
     assert list((path / 'keys').iterdir()) == []
-    for asset, content_type in (('/', 'text/html'), ('/assets/vault.js', 'text/javascript'),
-                                ('/assets/vault.css', 'text/css'), ('/assets/tokens.css', 'text/css')):
-        response = client.get(asset, headers=identity('1'))
-        assert response.status_code == 200
-        assert response.headers['content-type'].startswith(content_type)
-        assert response.content
+    response = client.get('/', headers=identity('1'), follow_redirects=False)
+    assert response.status_code == 308
+    assert response.headers['location'] == 'https://auth.lost.plus/#passage'
+    for asset in ('vault.js', 'vault.css', 'tokens.css'):
+        assert client.get('/assets/' + asset, headers=identity('1')).status_code == 404
     assert client.get('/assets/missing', headers=identity('1')).status_code == 404
     assert list((path / 'tenants').iterdir()) == []
 

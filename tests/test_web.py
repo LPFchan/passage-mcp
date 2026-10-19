@@ -121,16 +121,15 @@ def test_crud_and_trash(client):
     assert post(client,'secrets/read',**base).status_code == 404
 
 
-def test_headers_assets_and_no_interpolation(client):
-    for response in [client.get('/'), client.get('/assets/vault.js'), client.get('/assets/missing'),
-                     client.get('/api/session'),post(client,'secrets/read',folder='missing',item_name='x')]:
-        for key,value in HEADERS.items():
+def test_dashboard_redirect_and_private_headers(client):
+    response = client.get('/', follow_redirects=False)
+    assert response.status_code == 308
+    assert response.headers['location'] == 'https://auth.lost.plus/#passage'
+    for response in [response, client.get('/api/session'),
+                     post(client, 'secrets/read', folder='missing', item_name='x')]:
+        for key, value in HEADERS.items():
             assert response.headers[key] == value
-    html=client.get('/').text
-    assert 'alice@example.com' not in html
-    js=client.get('/assets/vault.js').text
-    assert 'innerHTML' not in js and 'localStorage' not in js
-    assert 'textContent' in js
+    assert client.get('/assets/vault.js').status_code == 404
 
 
 def test_internal_errors_are_redacted(client,monkeypatch):
@@ -151,14 +150,6 @@ def test_store_is_resolved_per_authenticated_request(client):
     assert post(client, 'folders/list').json()['data'] == alice
 
 
-def test_frontend_account_switch_and_escaping():
-    import shutil
-    import subprocess
-    if not shutil.which('node'):
-        pytest.skip('Node is needed for browser controller tests')
-    subprocess.run(['node', 'tests/test_web_frontend.cjs'], check=True)
-
-
 def test_unexpected_store_failure_is_redacted(client, monkeypatch):
     async def broken():
         raise OSError('/private/vault/path')
@@ -167,3 +158,20 @@ def test_unexpected_store_failure_is_redacted(client, monkeypatch):
     assert response.status_code == 500
     assert response.json() == {'error':'Vault unavailable'}
     assert response.headers['Cache-Control'] == 'no-store'
+
+
+def test_credential_list_exposes_only_masked_tails(client):
+    client.portal.call(client.store.add_folder, 'masked')
+    client.portal.call(client.store.add_login, 'masked', 'long', 'fox', 'private-password-f514')
+    client.portal.call(client.store.add_secret, 'masked', 'short', 'abcd')
+    response = post(client, 'secrets/list', folder='masked')
+    assert response.status_code == 200
+    assert response.json()['data'] == [{'folder': 'masked', 'items': [
+        {'name': 'long', 'masked': '••••f514'},
+        {'name': 'short', 'masked': '••••'},
+    ]}]
+    assert 'private-password' not in response.text
+    assert 'abcd' not in response.text
+    assert 'username' not in response.text
+    assert client.portal.call(client.store.list_secrets, 'masked') == [
+        {'folder': 'masked', 'items': [{'name': 'long'}, {'name': 'short'}]}]

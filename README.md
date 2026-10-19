@@ -14,9 +14,13 @@ The server uses the official MCP Python SDK v2 and supports the
 `2026-07-28` stateless protocol via `server/discover`, with a stateless legacy
 fallback for clients that still use `initialize`.
 
-The browser app is `https://passage.lost.plus/`. Sign in through Common Auth;
-browser API requests use its session cookie on the same origin. The MCP endpoint
-is `https://passage.lost.plus/mcp`, protected by the `passage` scope. MCP clients
+The browser view lives in the Auth dashboard at `https://auth.lost.plus/#passage`.
+`https://passage.lost.plus/` redirects there. The dashboard lists saved credentials
+with folder filters, masked tails, and copy actions; agents manage credentials through MCP.
+Auth forwards only its three read operations through the Passage gateway using
+the current browser session and bound account subject. Browser API requests use
+Common Auth's session cookie and the Passage origin. The MCP endpoint remains
+`https://passage.lost.plus/mcp`, protected by the `passage` scope. MCP clients
 use Common Auth OAuth or a Common Auth token as `Authorization: Bearer <token>`
 or `X-API-Key: <token>`. Service restrictions set by an administrator still apply.
 The gateway injects the account identity; the backend must remain on a private

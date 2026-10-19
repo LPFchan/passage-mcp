@@ -2,9 +2,8 @@
 from __future__ import annotations
 
 import json
-from importlib.resources import files
 
-from starlette.responses import HTMLResponse, JSONResponse, Response
+from starlette.responses import JSONResponse, RedirectResponse
 
 from .identity import decode_subject, header_values
 from .store import (ConflictError, ForbiddenError, InternalError, InvalidNameError,
@@ -69,15 +68,7 @@ def register_routes(mcp_server, get_store):
     """Register once; get_store() must resolve the current authenticated request."""
     @mcp_server.custom_route("/", methods=["GET"], include_in_schema=False)
     async def index(request):
-        return HTMLResponse(files("passage_mcp").joinpath("static/index.html").read_text(), headers=HEADERS)
-
-    @mcp_server.custom_route("/assets/{asset}", methods=["GET"], include_in_schema=False)
-    async def asset(request):
-        name = request.path_params["asset"]
-        types = {"tokens.css": "text/css", "vault.css": "text/css", "vault.js": "text/javascript"}
-        if name not in types:
-            return _json({"error": "Not found"}, 404)
-        return Response(files("passage_mcp").joinpath("static", name).read_bytes(), media_type=types[name], headers=HEADERS)
+        return RedirectResponse("https://auth.lost.plus/#passage", status_code=308, headers=HEADERS)
 
     @mcp_server.custom_route("/api/session", methods=["GET"], include_in_schema=False)
     async def session(request):
@@ -99,7 +90,14 @@ def register_routes(mcp_server, get_store):
                 if set(data) != set(fields) or any(not isinstance(data[k], str) for k in fields):
                     raise ValueError("Unexpected fields or field types")
                 # The mapping and field lists above are the only allowed dispatch targets.
-                result = await getattr(get_store(), method)(**data)
+                store = get_store()
+                result = await getattr(store, method)(**data)
+                if method == "list_secrets":
+                    for group in result:
+                        for item in group["items"]:
+                            record = await store.get_login(group["folder"], item["name"])
+                            value = record["password"]
+                            item["masked"] = "••••" + (value[-4:] if len(value) > 4 else "")
                 return _json({"data": result})
             except OverflowError:
                 return _json({"error": "Request too large"}, 413)
