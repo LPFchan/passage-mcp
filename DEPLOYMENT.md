@@ -62,8 +62,8 @@ and age encryption. Verify identity-only `/api/session` does not allocate a
 vault; missing identity, subject mismatch, and wrong/missing origin fail before
 provisioning. Two subjects must independently create/read/update/delete/recover
 items and read the same private values through MCP. Owner keys and ciphertext
-must remain byte-for-byte unchanged. Also retain tenancy, frontend account-switch,
-and local stdio checks. Use disposable stores and dummy secrets for local smoke.
+must remain byte-for-byte unchanged. Also retain tenancy and local stdio checks; Auth owns dashboard account-switch
+and browser rendering checks. Use disposable stores and dummy secrets for local smoke.
 
 ## 2. Deploy backend while admission remains locked
 
@@ -99,6 +99,22 @@ becomes `admin_only=0`, group `app`, alias `passage`. Preserve token scope, URLs
 and every visibility grant. Restricted accounts still require an explicit grant;
 never clear their allowlists to grant Passage. Publish the homepage listing only
 after acceptance succeeds.
+
+## Dashboard migration
+
+Deploy the Auth dashboard tab before deploying this backend. The tab proxies
+only folder listing, masked credential listing, and individual credential reads
+through the Passage gateway using the browser session and expected account
+subject. List responses contain `masked` tails, with no tail for values of four
+characters or fewer. Full values are fetched only for copying.
+
+Then deploy this backend with `docker compose up -d --build`. The old browser
+assets are removed and `/` redirects to `https://auth.lost.plus/#passage`.
+The `/mcp` URL, gateway policies, subject isolation, and store/key mounts remain
+the same. Check the public redirect with an authenticated session, the Auth tab
+at phone and desktop widths, and masked-list/copy requests. Do not log private
+response bodies. If the tab rollout fails, restore the recorded Auth version;
+if reverting the backend, also restore its previous container image.
 
 ## Acceptance and rollback
 

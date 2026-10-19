@@ -121,16 +121,15 @@ def test_crud_and_trash(client):
     assert post(client,'secrets/read',**base).status_code == 404
 
 
-def test_headers_assets_and_no_interpolation(client):
-    for response in [client.get('/'), client.get('/assets/vault.js'), client.get('/assets/missing'),
-                     client.get('/api/session'),post(client,'secrets/read',folder='missing',item_name='x')]:
-        for key,value in HEADERS.items():
+def test_dashboard_redirect_and_private_headers(client):
+    response = client.get('/', follow_redirects=False)
+    assert response.status_code == 308
+    assert response.headers['location'] == 'https://auth.lost.plus/#passage'
+    for response in [response, client.get('/api/session'),
+                     post(client, 'secrets/read', folder='missing', item_name='x')]:
+        for key, value in HEADERS.items():
             assert response.headers[key] == value
-    html=client.get('/').text
-    assert 'alice@example.com' not in html
-    js=client.get('/assets/vault.js').text
-    assert 'innerHTML' not in js and 'localStorage' not in js
-    assert 'textContent' in js
+    assert client.get('/assets/vault.js').status_code == 404
 
 
 def test_internal_errors_are_redacted(client,monkeypatch):
@@ -151,14 +150,6 @@ def test_store_is_resolved_per_authenticated_request(client):
     assert post(client, 'folders/list').json()['data'] == alice
 
 
-def test_frontend_account_switch_and_escaping():
-    import shutil
-    import subprocess
-    if not shutil.which('node'):
-        pytest.skip('Node is needed for browser controller tests')
-    subprocess.run(['node', 'tests/test_web_frontend.cjs'], check=True)
-
-
 def test_unexpected_store_failure_is_redacted(client, monkeypatch):
     async def broken():
         raise OSError('/private/vault/path')
@@ -167,3 +158,136 @@ def test_unexpected_store_failure_is_redacted(client, monkeypatch):
     assert response.status_code == 500
     assert response.json() == {'error':'Vault unavailable'}
     assert response.headers['Cache-Control'] == 'no-store'
+
+
+def test_credential_list_exposes_only_masked_tails(client):
+    client.portal.call(client.store.add_folder, 'masked')
+    client.portal.call(client.store.add_login, 'masked', 'long', 'fox', 'private-password-f514')
+    client.portal.call(client.store.add_secret, 'masked', 'short', 'abcd')
+    response = post(client, 'secrets/list', folder='masked')
+    assert response.status_code == 200
+    assert response.json()['data'] == [{'folder': 'masked', 'items': [
+        {'name': 'long', 'masked': '••••f514'},
+        {'name': 'short', 'masked': '••••'},
+    ]}]
+    assert 'private-password' not in response.text
+    assert 'abcd' not in response.text
+    assert 'username' not in response.text
+    assert client.portal.call(client.store.list_secrets, 'masked') == [
+        {'folder': 'masked', 'items': [{'name': 'long'}, {'name': 'short'}]}]
+
+
+@pytest.mark.parametrize('late', [False, True])
+def test_listing_skips_entries_removed_during_masking(client, monkeypatch, late):
+    client.portal.call(client.store.add_secret, 'infra', 'gone', 'secret-gone')
+    client.portal.call(client.store.add_secret, 'infra', 'kept', 'secret-kept')
+    original = client.store.get_login
+    async def disappearing(folder, item_name):
+        if item_name == 'gone':
+            await client.store.delete_secret(folder, item_name)
+            if late:
+                raise InternalError('age lost its input file')
+        return await original(folder, item_name)
+    monkeypatch.setattr(client.store, 'get_login', disappearing)
+    response = post(client, 'secrets/list', folder='infra')
+    assert response.status_code == 200
+    assert response.json()['data'] == [{'folder': 'infra', 'items': [
+        {'name': 'kept', 'masked': '••••kept'}]}]
+
+
+def test_listing_preserves_real_decryption_failures(client, monkeypatch):
+    client.portal.call(client.store.add_secret, 'infra', 'broken', 'secret-broken')
+    async def broken(*args):
+        raise InternalError('sensitive decryption diagnostic')
+    monkeypatch.setattr(client.store, 'get_login', broken)
+    response = post(client, 'secrets/list', folder='infra')
+    assert response.status_code == 500
+    assert response.json() == {'error': 'Vault unavailable'}
+
+
+def test_listing_decrypts_with_bounded_parallelism(client, monkeypatch):
+    import asyncio
+    names = [str(i) for i in range(12)]
+    active = peak = 0
+    async def listing(folder):
+        return [{'folder': folder, 'items': [{'name': name} for name in names]}]
+    async def reading(folder, item_name):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        try:
+            await asyncio.sleep(0.01)
+            return {'password': 'secret-' + item_name}
+        finally:
+            active -= 1
+    monkeypatch.setattr(client.store, 'list_secrets', listing)
+    monkeypatch.setattr(client.store, 'get_login', reading)
+    response = post(client, 'secrets/list', folder='infra')
+    assert response.status_code == 200
+    assert [item['name'] for item in response.json()['data'][0]['items']] == names
+    assert peak == 4
+    assert active == 0
+    assert 'secret-' not in response.text
+
+
+def test_failed_listing_drains_current_batch_and_stops(client, monkeypatch):
+    import asyncio
+    started, finished = [], []
+    active = 0
+    async def listing(folder):
+        return [{'folder': folder, 'items': [{'name': str(i)} for i in range(12)]}]
+    async def reading(folder, item_name):
+        nonlocal active
+        started.append(item_name)
+        active += 1
+        try:
+            if item_name == '0':
+                raise InternalError('broken ciphertext')
+            await asyncio.sleep(0.01)
+            return {'password': 'secret-' + item_name}
+        finally:
+            active -= 1
+            finished.append(item_name)
+    monkeypatch.setattr(client.store, 'list_secrets', listing)
+    monkeypatch.setattr(client.store, 'get_login', reading)
+    response = post(client, 'secrets/list', folder='infra')
+    assert response.status_code == 500
+    assert set(started) == {'0', '1', '2', '3'}
+    assert set(finished) == set(started)
+    assert active == 0
+
+
+def test_large_listing_does_not_queue_ahead_of_other_requests(client, monkeypatch):
+    import asyncio
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    large_started, small_listed = threading.Event(), threading.Event()
+    release = asyncio.Event()
+    reads = []
+    async def listing(folder):
+        if folder == 'small':
+            small_listed.set()
+        count = 12 if folder == 'large' else 1
+        return [{'folder': folder, 'items': [{'name': str(i)} for i in range(count)]}]
+    async def reading(folder, item_name):
+        reads.append((folder, item_name))
+        if folder == 'large' and int(item_name) < 4:
+            if len(reads) == 4:
+                large_started.set()
+            await release.wait()
+        return {'password': 'secret-' + item_name}
+    monkeypatch.setattr(client.store, 'list_secrets', listing)
+    monkeypatch.setattr(client.store, 'get_login', reading)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        large = pool.submit(post, client, 'secrets/list', folder='large')
+        try:
+            assert large_started.wait(2)
+            small = pool.submit(post, client, 'secrets/list', folder='small')
+            assert small_listed.wait(2)
+            client.portal.call(asyncio.sleep, 0)
+            client.portal.call(asyncio.sleep, 0)
+        finally:
+            client.portal.call(release.set)
+        assert small.result(timeout=2).status_code == 200
+        assert large.result(timeout=2).status_code == 200
+    assert reads.index(('small', '0')) < reads.index(('large', '4'))
