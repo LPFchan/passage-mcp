@@ -1,6 +1,7 @@
 """Browser vault routes. Identity and request-scoped store are supplied by the host."""
 from __future__ import annotations
 
+import asyncio
 import json
 
 from starlette.responses import JSONResponse, RedirectResponse
@@ -66,6 +67,24 @@ async def _payload(request):
 
 def register_routes(mcp_server, get_store):
     """Register once; get_store() must resolve the current authenticated request."""
+    decrypt_slots = asyncio.Semaphore(4)
+
+    async def masked_item(store, folder, item):
+        async with decrypt_slots:
+            try:
+                record = await store.get_login(folder, item["name"])
+            except NotFoundError:
+                return None
+            except InternalError:
+                # age can lose the file after get_login's existence check.
+                # Keep real decryption failures visible; skip only vanished names.
+                current = await store.list_secrets(folder)
+                if any(entry["name"] == item["name"] for group in current for entry in group["items"]):
+                    raise
+                return None
+            value = record["password"]
+            return {"name": item["name"], "masked": "••••" + (value[-4:] if len(value) > 4 else "")}
+
     @mcp_server.custom_route("/", methods=["GET"], include_in_schema=False)
     async def index(request):
         return RedirectResponse("https://auth.lost.plus/#passage", status_code=308, headers=HEADERS)
@@ -94,10 +113,9 @@ def register_routes(mcp_server, get_store):
                 result = await getattr(store, method)(**data)
                 if method == "list_secrets":
                     for group in result:
-                        for item in group["items"]:
-                            record = await store.get_login(group["folder"], item["name"])
-                            value = record["password"]
-                            item["masked"] = "••••" + (value[-4:] if len(value) > 4 else "")
+                        masked = await asyncio.gather(*(masked_item(store, group["folder"], item)
+                                                        for item in group["items"]))
+                        group["items"] = [item for item in masked if item is not None]
                 return _json({"data": result})
             except OverflowError:
                 return _json({"error": "Request too large"}, 413)

@@ -175,3 +175,56 @@ def test_credential_list_exposes_only_masked_tails(client):
     assert 'username' not in response.text
     assert client.portal.call(client.store.list_secrets, 'masked') == [
         {'folder': 'masked', 'items': [{'name': 'long'}, {'name': 'short'}]}]
+
+
+@pytest.mark.parametrize('late', [False, True])
+def test_listing_skips_entries_removed_during_masking(client, monkeypatch, late):
+    client.portal.call(client.store.add_secret, 'infra', 'gone', 'secret-gone')
+    client.portal.call(client.store.add_secret, 'infra', 'kept', 'secret-kept')
+    original = client.store.get_login
+    async def disappearing(folder, item_name):
+        if item_name == 'gone':
+            await client.store.delete_secret(folder, item_name)
+            if late:
+                raise InternalError('age lost its input file')
+        return await original(folder, item_name)
+    monkeypatch.setattr(client.store, 'get_login', disappearing)
+    response = post(client, 'secrets/list', folder='infra')
+    assert response.status_code == 200
+    assert response.json()['data'] == [{'folder': 'infra', 'items': [
+        {'name': 'kept', 'masked': '••••kept'}]}]
+
+
+def test_listing_preserves_real_decryption_failures(client, monkeypatch):
+    client.portal.call(client.store.add_secret, 'infra', 'broken', 'secret-broken')
+    async def broken(*args):
+        raise InternalError('sensitive decryption diagnostic')
+    monkeypatch.setattr(client.store, 'get_login', broken)
+    response = post(client, 'secrets/list', folder='infra')
+    assert response.status_code == 500
+    assert response.json() == {'error': 'Vault unavailable'}
+
+
+def test_listing_decrypts_with_bounded_parallelism(client, monkeypatch):
+    import asyncio
+    names = [str(i) for i in range(12)]
+    active = peak = 0
+    async def listing(folder):
+        return [{'folder': folder, 'items': [{'name': name} for name in names]}]
+    async def reading(folder, item_name):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        try:
+            await asyncio.sleep(0.01)
+            return {'password': 'secret-' + item_name}
+        finally:
+            active -= 1
+    monkeypatch.setattr(client.store, 'list_secrets', listing)
+    monkeypatch.setattr(client.store, 'get_login', reading)
+    response = post(client, 'secrets/list', folder='infra')
+    assert response.status_code == 200
+    assert [item['name'] for item in response.json()['data'][0]['items']] == names
+    assert peak == 4
+    assert active == 0
+    assert 'secret-' not in response.text
