@@ -220,6 +220,18 @@ class AgeStore:
         p = self._existing(folder, item_name)
         return await self._decrypt(p)
 
+    def _listed(self, folder_dir: Path) -> list[dict]:
+        """Names with the time each was added. Edits keep a file's mtime, so it
+        is the add time; a name gone since the directory read is skipped."""
+        items = []
+        for name in self._iter_items(folder_dir):
+            try:
+                added = int(self._safe(folder_dir / (name + SUFFIX)).stat().st_mtime)
+            except FileNotFoundError:
+                continue
+            items.append({"name": name, "added": added})
+        return items
+
     async def list_secrets(self, folder: str | None = None) -> list[dict]:
         if folder is not None:
             if self._allowed is not None and folder not in self._allowed:
@@ -228,18 +240,18 @@ class AgeStore:
                 d = self._folder_dir(folder)
             except InvalidNameError:
                 return []
-            items = self._iter_items(d)
+            items = self._listed(d)
             if not items:
                 return []
-            return [{"folder": folder, "items": [{"name": n} for n in items]}]
+            return [{"folder": folder, "items": items}]
 
         result: list[dict] = []
         for f in self._iter_folders():
             if self._allowed is not None and f not in self._allowed:
                 continue
-            items = self._iter_items(self._root / f)
+            items = self._listed(self._root / f)
             if items:
-                result.append({"folder": f, "items": [{"name": n} for n in items]})
+                result.append({"folder": f, "items": items})
         return result
 
     async def list_folders(self) -> list[dict]:
@@ -301,9 +313,11 @@ class AgeStore:
     async def edit_secret(self, folder: str, item_name: str, value: str) -> None:
         async with self._lock:
             p = self._existing(folder, item_name)
+            added = p.stat()
             record = await self._decrypt(p)
             record["password"] = value
             await self._encrypt(p, record)
+            os.utime(p, ns=(added.st_atime_ns, added.st_mtime_ns))
 
     async def delete_secret(self, folder: str, item_name: str) -> None:
         async with self._lock:

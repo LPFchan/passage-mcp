@@ -166,15 +166,17 @@ def test_credential_list_exposes_only_masked_tails(client):
     client.portal.call(client.store.add_secret, 'masked', 'short', 'abcd')
     response = post(client, 'secrets/list', folder='masked')
     assert response.status_code == 200
-    assert response.json()['data'] == [{'folder': 'masked', 'items': [
+    items = response.json()['data'][0]['items']
+    assert all(isinstance(item.pop('added'), int) for item in items)
+    assert response.json()['data'][0]['folder'] == 'masked' and items == [
         {'name': 'long', 'masked': '••••f514'},
         {'name': 'short', 'masked': '••••'},
-    ]}]
+    ]
     assert 'private-password' not in response.text
     assert 'abcd' not in response.text
     assert 'username' not in response.text
-    assert client.portal.call(client.store.list_secrets, 'masked') == [
-        {'folder': 'masked', 'items': [{'name': 'long'}, {'name': 'short'}]}]
+    assert [sorted(item) for item in client.portal.call(client.store.list_secrets, 'masked')[0]['items']] == [
+        ['added', 'name'], ['added', 'name']]
 
 
 @pytest.mark.parametrize('late', [False, True])
@@ -191,8 +193,7 @@ def test_listing_skips_entries_removed_during_masking(client, monkeypatch, late)
     monkeypatch.setattr(client.store, 'get_login', disappearing)
     response = post(client, 'secrets/list', folder='infra')
     assert response.status_code == 200
-    assert response.json()['data'] == [{'folder': 'infra', 'items': [
-        {'name': 'kept', 'masked': '••••kept'}]}]
+    assert [item['name'] for item in response.json()['data'][0]['items']] == ['kept']
 
 
 def test_listing_preserves_real_decryption_failures(client, monkeypatch):
@@ -210,7 +211,7 @@ def test_listing_decrypts_with_bounded_parallelism(client, monkeypatch):
     names = [str(i) for i in range(12)]
     active = peak = 0
     async def listing(folder):
-        return [{'folder': folder, 'items': [{'name': name} for name in names]}]
+        return [{'folder': folder, 'items': [{'name': name, 'added': 0} for name in names]}]
     async def reading(folder, item_name):
         nonlocal active, peak
         active += 1
@@ -235,7 +236,7 @@ def test_failed_listing_drains_current_batch_and_stops(client, monkeypatch):
     started, finished = [], []
     active = 0
     async def listing(folder):
-        return [{'folder': folder, 'items': [{'name': str(i)} for i in range(12)]}]
+        return [{'folder': folder, 'items': [{'name': str(i), 'added': 0} for i in range(12)]}]
     async def reading(folder, item_name):
         nonlocal active
         started.append(item_name)
@@ -268,7 +269,7 @@ def test_large_listing_does_not_queue_ahead_of_other_requests(client, monkeypatc
         if folder == 'small':
             small_listed.set()
         count = 12 if folder == 'large' else 1
-        return [{'folder': folder, 'items': [{'name': str(i)} for i in range(count)]}]
+        return [{'folder': folder, 'items': [{'name': str(i), 'added': 0} for i in range(count)]}]
     async def reading(folder, item_name):
         reads.append((folder, item_name))
         if folder == 'large' and int(item_name) < 4:
