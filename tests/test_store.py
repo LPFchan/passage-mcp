@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import subprocess
 from pathlib import Path
 
@@ -71,15 +72,25 @@ def test_login_keeps_username_on_edit(store: AgeStore):
     }
 
 
+def names(listing):
+    return [(group["folder"], [item["name"] for item in group["items"]]) for group in listing]
+
+
+def test_listing_reports_add_time_kept_across_edits(store: AgeStore):
+    run(store.add_secret("llm", "A_KEY", "1"))
+    path = store._item_path("llm", "A_KEY")
+    os.utime(path, (1_700_000_000, 1_700_000_000))
+    run(store.edit_secret("llm", "A_KEY", "2"))
+    assert run(store.get_secret("llm", "A_KEY")) == "2"
+    assert run(store.list_secrets("llm")) == [{"folder": "llm", "items": [{"name": "A_KEY", "added": 1_700_000_000}]}]
+
+
 def test_listing_and_search(store: AgeStore):
     run(store.add_secret("llm", "B_KEY", "1"))
     run(store.add_secret("llm", "A_KEY", "2"))
     run(store.add_secret("infra", "CF_TOKEN", "3"))
-    assert run(store.list_secrets("llm")) == [{"folder": "llm", "items": [{"name": "A_KEY"}, {"name": "B_KEY"}]}]
-    assert run(store.list_secrets()) == [
-        {"folder": "infra", "items": [{"name": "CF_TOKEN"}]},
-        {"folder": "llm", "items": [{"name": "A_KEY"}, {"name": "B_KEY"}]},
-    ]
+    assert names(run(store.list_secrets("llm"))) == [("llm", ["A_KEY", "B_KEY"])]
+    assert names(run(store.list_secrets())) == [("infra", ["CF_TOKEN"]), ("llm", ["A_KEY", "B_KEY"])]
     assert run(store.list_secrets("nope")) == []
     assert run(store.list_folders()) == [{"name": "infra"}, {"name": "llm"}]
     assert run(store.search_secrets("key")) == [

@@ -84,7 +84,8 @@ def register_routes(mcp_server, get_store):
                     raise
                 return None
             value = record["password"]
-            return {"name": item["name"], "masked": "••••" + (value[-4:] if len(value) > 4 else "")}
+            return {"name": item["name"], "added": item["added"],
+                    "masked": "••••" + (value[-4:] if len(value) > 4 else "")}
 
     @mcp_server.custom_route("/", methods=["GET"], include_in_schema=False)
     async def index(request):
