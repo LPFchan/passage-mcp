@@ -99,6 +99,47 @@ def mcp_tool(client, sub, name, **arguments):
     return result['content'][0]['text']
 
 
+@pytest.mark.parametrize('value', ['', '  fixture-秘密\nwith whitespace\n', '{"password":"literal JSON, not a login"}'])
+def test_fleet_cli_secret_read_contract(combined, value):
+    """The pipe client needs an exact string, not a masked or trimmed value."""
+    client, _ = combined
+    browser(client, 'cli-user', 'folders/create', folder='cli')
+    browser(client, 'cli-user', 'secrets/create', folder='cli', item_name='value', value=value)
+    response = client.post('/mcp', headers={
+        **identity('cli-user'), 'Accept': 'application/json, text/event-stream',
+    }, json={'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+             'params': {'name': 'get_secret', 'arguments': {'folder': 'cli', 'item_name': 'value'}}})
+    assert response.status_code == 200
+    answer = response.json()
+    assert answer['id'] == 1
+    result = answer['result']
+    assert not result.get('isError')
+    assert result['content'] == [{'type': 'text', 'text': value}]
+    # The same request cannot read the first account's item under another subject.
+    denied = client.post('/mcp', headers={
+        **identity('other-cli-user'), 'Accept': 'application/json, text/event-stream',
+    }, json={'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+             'params': {'name': 'get_secret', 'arguments': {'folder': 'cli', 'item_name': 'value'}}})
+    assert denied.status_code == 200
+    assert denied.json()['result']['isError']
+
+
+def test_fleet_cli_username_read_contract(combined):
+    client, _ = combined
+    browser(client, 'cli-user', 'folders/create', folder='cli')
+    browser(client, 'cli-user', 'logins/create', folder='cli', item_name='login',
+            username='fox', password='fixture-password')
+    response = client.post('/mcp', headers={
+        **identity('cli-user'), 'Accept': 'application/json, text/event-stream',
+    }, json={'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+             'params': {'name': 'get_login', 'arguments': {'folder': 'cli', 'item_name': 'login'}}})
+    assert response.status_code == 200
+    result = response.json()['result']
+    assert not result.get('isError')
+    record = result.get('structuredContent') or json.loads(result['content'][0]['text'])
+    assert record == {'username': 'fox', 'password': 'fixture-password'}
+
+
 def test_session_assets_and_rejections_do_not_allocate(combined):
     client, path = combined
     for sub in ('alice', 'bob', '1'):
