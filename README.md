@@ -80,6 +80,31 @@ Back up all vault ciphertext, including `.age-recipients` and `.trash`, and keep
 matching key backups separately with restricted access. Test restoration using
 an isolated copy. Ciphertext backups alone cannot restore a vault after key loss.
 
+## Pipe a secret into a CLI
+
+The Common Auth `fleet` CLI includes a Passage module:
+
+```sh
+set -o pipefail
+fleet passage get registry token | docker login registry.example --username fox --password-stdin
+fleet passage get accounts example --field username | consumer --username-stdin
+```
+
+Use `auth login` to sign the machine into the intended Common Auth account.
+`fleet passage get FOLDER ITEM` reads the secret/password; `--field username`
+selects a login's username. It calls the existing authenticated MCP tools, so
+service admission and private-vault boundaries remain the same. No additional
+backend route or separate Passage CLI installation is required.
+
+Stdout contains the exact UTF-8 value without an added newline. Terminal output
+is refused. The CLI does not put secrets into command arguments or cache files;
+errors are printed separately to stderr. Use a destination that reads stdin
+without logging it. Shell substitution, tracing, `echo`, `tee`, or redirecting to
+a plaintext file can expose a value despite using the CLI.
+
+The module is shipped by `LPFchan/auth`; after its deployment, existing machines
+receive it through `fleet self-update` or the nightly pass.
+
 ## Stdio / local use
 
 Defaults follow passage: store at `~/.passage/store`, identity at
