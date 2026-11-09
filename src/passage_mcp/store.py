@@ -184,12 +184,21 @@ class AgeStore:
 
     # -- listing helpers -----------------------------------------------------
 
+    @staticmethod
+    def _entries(directory: Path) -> list[Path]:
+        """Scans run in a worker thread, so a rename, recover or empty_trash can
+        remove a directory mid-scan; list it as empty instead of failing."""
+        try:
+            return list(directory.iterdir())
+        except FileNotFoundError:
+            return []
+
     def _iter_folders(self) -> list[str]:
         self._safe(self._root)
         if not self._root.is_dir():
             return []
         return sorted(
-            p.name for p in self._root.iterdir() if self._safe(p).is_dir() and not p.name.startswith(".")
+            p.name for p in self._entries(self._root) if self._safe(p).is_dir() and not p.name.startswith(".")
         )
 
     def _iter_items(self, folder_dir: Path) -> list[str]:
@@ -198,7 +207,7 @@ class AgeStore:
             return []
         return sorted(
             p.name[: -len(SUFFIX)]
-            for p in folder_dir.iterdir()
+            for p in self._entries(folder_dir)
             if self._safe(p).is_file() and p.name.endswith(SUFFIX) and not p.name.startswith(".")
         )
 
@@ -273,10 +282,10 @@ class AgeStore:
         if not trash.is_dir():
             return []
         result: list[dict] = []
-        for folder_dir in trash.iterdir():
+        for folder_dir in self._entries(trash):
             if not self._safe(folder_dir).is_dir():
                 continue
-            for p in folder_dir.iterdir():
+            for p in self._entries(folder_dir):
                 if not (self._safe(p).is_file() and p.name.endswith(SUFFIX)):
                     continue
                 try:
@@ -348,7 +357,7 @@ class AgeStore:
         async with self._lock:
             trash = self._safe(self._root / TRASH_DIR)
             if trash.is_dir():
-                await asyncio.to_thread(shutil.rmtree, trash)
+                shutil.rmtree(trash)
 
     async def add_folder(self, folder: str) -> None:
         async with self._lock:

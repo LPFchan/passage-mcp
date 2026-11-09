@@ -187,3 +187,20 @@ def test_listing_scans_do_not_block_event_loop(store: AgeStore, monkeypatch):
         return ticks
 
     assert run(scenario()) >= 5
+
+
+def test_listing_tolerates_directories_removed_mid_scan(store: AgeStore, monkeypatch):
+    run(store.add_secret("llm", "K", "v"))
+    run(store.delete_secret("llm", "K"))
+    real_is_dir = Path.is_dir
+
+    def vanish(self):
+        # the directory passes its check, then empty_trash/rename removes it
+        result = real_is_dir(self)
+        if result and self.name in {"llm", "infra"}:
+            monkeypatch.setattr(Path, "is_dir", real_is_dir)
+            self.rename(self.with_name(self.name + "-gone"))
+        return result
+
+    monkeypatch.setattr(Path, "is_dir", vanish)
+    assert run(store.list_trash()) == []
