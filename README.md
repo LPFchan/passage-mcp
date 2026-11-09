@@ -116,11 +116,15 @@ Defaults follow passage: store at `~/.passage/store`, identity at
   "mcpServers": {
     "passage": {
       "command": "uvx",
-      "args": ["passage-mcp-server", "--stdio", "--config", "~/.config/passage-mcp/config.json"]
+      "args": ["--from", "git+https://github.com/LPFchan/passage-mcp", "passage-mcp-server",
+               "--stdio", "--config", "~/.config/passage-mcp/config.json"]
     }
   }
 }
 ```
+
+The package is not on PyPI, so install it from this repository; a bare
+`uvx passage-mcp-server` would fetch whatever someone else publishes under that name.
 
 `age` must be on `PATH`; HTTP tenant provisioning also requires `age-keygen`.
 
