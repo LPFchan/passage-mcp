@@ -101,12 +101,7 @@ def _build_lifespan(config_path: str, *, http: bool = False):
         logger.info("Loading config from %s", config_path)
 
         config = Config.from_path(config_path)
-        logger.info(
-            "Store %s, identity %s (allowed_folders=%s)",
-            config.store_dir,
-            config.identity_file,
-            config.allowed_folders if config.allowed_folders is not None else "all",
-        )
+        logger.info("Store %s, identity %s", config.store_dir, config.identity_file)
 
         _http_mode = http
         _client = AgeStore(config)

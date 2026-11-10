@@ -106,7 +106,6 @@ class AgeStore:
         self._root: Path = config.store_dir.absolute()
         self._identity: Path = config.identity_file.absolute()
         self._recipients: Path = self._root / RECIPIENTS_FILE
-        self._allowed: list[str] | None = list(config.allowed_folders) if config.allowed_folders is not None else None
         self._lock = asyncio.Lock()
 
     # -- paths ---------------------------------------------------------------
@@ -132,14 +131,7 @@ class AgeStore:
             / (_check_name(name, "item_name") + SUFFIX)
         )
 
-    # -- access control ------------------------------------------------------
-
-    def _check_allowed(self, folder: str) -> None:
-        if self._allowed is not None and folder not in self._allowed:
-            raise ForbiddenError(f"Folder not in allowed_folders: {folder}")
-
     def _require_folder(self, folder: str) -> Path:
-        self._check_allowed(folder)
         d = self._folder_dir(folder)
         if not d.is_dir():
             raise NotFoundError(f"Folder not found: {folder}")
@@ -192,12 +184,21 @@ class AgeStore:
 
     # -- listing helpers -----------------------------------------------------
 
+    @staticmethod
+    def _entries(directory: Path) -> list[Path]:
+        """Scans run in a worker thread, so a rename, recover or empty_trash can
+        remove a directory mid-scan; list it as empty instead of failing."""
+        try:
+            return list(directory.iterdir())
+        except FileNotFoundError:
+            return []
+
     def _iter_folders(self) -> list[str]:
         self._safe(self._root)
         if not self._root.is_dir():
             return []
         return sorted(
-            p.name for p in self._root.iterdir() if self._safe(p).is_dir() and not p.name.startswith(".")
+            p.name for p in self._entries(self._root) if self._safe(p).is_dir() and not p.name.startswith(".")
         )
 
     def _iter_items(self, folder_dir: Path) -> list[str]:
@@ -206,7 +207,7 @@ class AgeStore:
             return []
         return sorted(
             p.name[: -len(SUFFIX)]
-            for p in folder_dir.iterdir()
+            for p in self._entries(folder_dir)
             if self._safe(p).is_file() and p.name.endswith(SUFFIX) and not p.name.startswith(".")
         )
 
@@ -232,10 +233,14 @@ class AgeStore:
             items.append({"name": name, "added": added})
         return items
 
+    # Listing scans touch every file in the vault. They run in a worker thread
+    # so one large vault does not stall every other request on the event loop.
+
     async def list_secrets(self, folder: str | None = None) -> list[dict]:
+        return await asyncio.to_thread(self._list_secrets, folder)
+
+    def _list_secrets(self, folder: str | None) -> list[dict]:
         if folder is not None:
-            if self._allowed is not None and folder not in self._allowed:
-                return []
             try:
                 d = self._folder_dir(folder)
             except InvalidNameError:
@@ -247,38 +252,40 @@ class AgeStore:
 
         result: list[dict] = []
         for f in self._iter_folders():
-            if self._allowed is not None and f not in self._allowed:
-                continue
             items = self._listed(self._root / f)
             if items:
                 result.append({"folder": f, "items": items})
         return result
 
     async def list_folders(self) -> list[dict]:
-        return [{"name": f} for f in self._iter_folders()]
+        return [{"name": f} for f in await asyncio.to_thread(self._iter_folders)]
 
     async def search_secrets(self, query: str) -> list[dict]:
+        return await asyncio.to_thread(self._search_secrets, query)
+
+    def _search_secrets(self, query: str) -> list[dict]:
         q = query.strip().lower()
         if not q:
             return []
         results: list[dict] = []
         for f in self._iter_folders():
-            if self._allowed is not None and f not in self._allowed:
-                continue
             for name in self._iter_items(self._root / f):
                 if q in name.lower():
                     results.append({"folder": f, "item_name": name})
         return results
 
     async def list_trash(self) -> list[dict]:
+        return await asyncio.to_thread(self._list_trash)
+
+    def _list_trash(self) -> list[dict]:
         trash = self._safe(self._root / TRASH_DIR)
         if not trash.is_dir():
             return []
         result: list[dict] = []
-        for folder_dir in trash.iterdir():
+        for folder_dir in self._entries(trash):
             if not self._safe(folder_dir).is_dir():
                 continue
-            for p in folder_dir.iterdir():
+            for p in self._entries(folder_dir):
                 if not (self._safe(p).is_file() and p.name.endswith(SUFFIX)):
                     continue
                 try:
@@ -332,7 +339,6 @@ class AgeStore:
 
     async def recover_secret(self, folder: str, item_name: str) -> None:
         async with self._lock:
-            self._check_allowed(folder)
             t = self._trash_path(folder, item_name)
             if not t.is_file():
                 raise NotFoundError(f"Item not in trash: {item_name}")
@@ -359,8 +365,6 @@ class AgeStore:
             if d.exists():
                 raise ConflictError(f"Folder already exists: {folder}")
             d.mkdir()
-            if self._allowed is not None and folder not in self._allowed:
-                self._allowed.append(folder)
 
     async def delete_folder(self, folder: str) -> None:
         async with self._lock:
@@ -384,8 +388,6 @@ class AgeStore:
             d.rename(nd)
             if old_trash.is_dir():
                 old_trash.rename(new_trash)
-            if self._allowed is not None and folder in self._allowed:
-                self._allowed[self._allowed.index(folder)] = new_name
 
     async def move_secret(self, folder: str, item_name: str, target_folder: str) -> None:
         async with self._lock:
@@ -448,16 +450,6 @@ class AgeStore:
                 raise InternalError("Startup probe decrypted to unexpected content")
         finally:
             probe.unlink(missing_ok=True)
-
-        existing = self._iter_folders()
-        for folder_name in self._allowed or []:
-            if folder_name not in existing:
-                logger.warning("Folder %r in allowed_folders not found in store", folder_name)
-        if self._allowed is not None:
-            for folder_name in existing:
-                if folder_name not in self._allowed:
-                    self._allowed.append(folder_name)
-                    logger.info("Auto-allowed existing folder: %s", folder_name)
 
     async def close(self) -> None:
         pass

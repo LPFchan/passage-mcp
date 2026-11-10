@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -13,7 +14,6 @@ from passage_mcp.config import Config
 from passage_mcp.store import (
     AgeStore,
     ConflictError,
-    ForbiddenError,
     InvalidNameError,
     NotFoundError,
 )
@@ -42,13 +42,9 @@ def store(tmp_path: Path) -> AgeStore:
     (root / "llm").mkdir()
     (root / "infra").mkdir()
 
-    s = AgeStore(Config(store_dir=root, identity_file=identity, allowed_folders=["llm"]))
+    s = AgeStore(Config(store_dir=root, identity_file=identity))
     run(s.validate())
     return s
-
-
-def test_validate_auto_allows_existing_folders(store: AgeStore):
-    assert store._allowed == ["llm", "infra"]
 
 
 def test_add_get_edit_roundtrip(store: AgeStore):
@@ -126,11 +122,9 @@ def test_move_rename_folders(store: AgeStore):
     assert run(store.get_secret("infra", "K2")) == "v"
 
     run(store.add_folder("new"))
-    assert "new" in store._allowed
     with pytest.raises(ConflictError):
         run(store.delete_folder("infra"))
     run(store.rename_folder("new", "newer"))
-    assert "newer" in store._allowed and "new" not in store._allowed
     # trashed entries follow their folder through a rename
     run(store.add_secret("infra", "T", "v"))
     run(store.delete_secret("infra", "T"))
@@ -143,15 +137,9 @@ def test_move_rename_folders(store: AgeStore):
     assert run(store.list_folders()) == [{"name": "infra"}, {"name": "llm"}]
 
 
-def test_forbidden_and_missing(store: AgeStore):
-    store._allowed = ["llm"]
-    with pytest.raises(ForbiddenError):
-        run(store.get_secret("infra", "x"))
+def test_missing(store: AgeStore):
     with pytest.raises(NotFoundError):
         run(store.get_secret("llm", "missing"))
-    with pytest.raises(ForbiddenError):
-        run(store.add_secret("ghost", "x", "y"))
-    store._allowed = None
     with pytest.raises(NotFoundError):
         run(store.add_secret("ghost", "x", "y"))
 
@@ -172,3 +160,47 @@ def test_reads_plain_passage_entry(store: AgeStore):
         input=b"hunter2\n", check=True,
     )
     assert run(store.get_login("llm", "manual")) == {"password": "hunter2", "username": ""}
+
+
+def test_listing_scans_do_not_block_event_loop(store: AgeStore, monkeypatch):
+    real = store._iter_folders
+
+    def slow_scan():
+        time.sleep(0.2)
+        return real()
+
+    monkeypatch.setattr(store, "_iter_folders", slow_scan)
+
+    async def scenario():
+        ticks = 0
+
+        async def ticker():
+            nonlocal ticks
+            while True:
+                await asyncio.sleep(0.01)
+                ticks += 1
+
+        task = asyncio.create_task(ticker())
+        await asyncio.gather(store.list_secrets(), store.search_secrets("x"),
+                             store.list_folders())
+        task.cancel()
+        return ticks
+
+    assert run(scenario()) >= 5
+
+
+def test_listing_tolerates_directories_removed_mid_scan(store: AgeStore, monkeypatch):
+    run(store.add_secret("llm", "K", "v"))
+    run(store.delete_secret("llm", "K"))
+    real_is_dir = Path.is_dir
+
+    def vanish(self):
+        # the directory passes its check, then empty_trash/rename removes it
+        result = real_is_dir(self)
+        if result and self.name in {"llm", "infra"}:
+            monkeypatch.setattr(Path, "is_dir", real_is_dir)
+            self.rename(self.with_name(self.name + "-gone"))
+        return result
+
+    monkeypatch.setattr(Path, "is_dir", vanish)
+    assert run(store.list_trash()) == []
